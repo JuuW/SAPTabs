@@ -21,8 +21,6 @@ final class SAPWindowManager: ObservableObject {
 
     // SAP GUI for Java 的进程名
     private let processName = "SAPGUI"
-    // 连接管理器主窗口标题,过滤掉不作为页签
-    private let managerWindowTitles: Set<String> = ["SAP GUI for Java"]
 
     private var timer: Timer?
 
@@ -104,7 +102,11 @@ final class SAPWindowManager: ObservableObject {
 
             for win in axWindows {
                 let title = copyStringAttribute(win, kAXTitleAttribute) ?? "(未命名)"
-                if managerWindowTitles.contains(title) { continue }
+                // 只保留 SAP 会话窗口(标题形如 "EUP (1) (300)")。
+                // 弹出框(如 "Information")、连接管理器("SAP GUI for Java")的
+                // role/subrole/modal 都和会话窗口一样,无法用 AX 属性区分,
+                // 只能靠标题格式过滤:三字母系统号 + " (数字) (数字)"。
+                if !isSessionWindow(title) { continue }
 
                 // 稳定 id:pid + 标题 + 窗口位置。
                 // 位置不随 z-order 变化,因此同标题的多个窗口(如三个 "DSC (1) (000)")
@@ -187,6 +189,13 @@ final class SAPWindowManager: ObservableObject {
         String(title.prefix(3))
     }
 
+    /// 判定是否为 SAP 会话窗口。会话标题形如 "EUP (1) (300)":
+    /// 任意系统号开头 + 一个 " (数字)" 会话号 + 一个 " (数字)" client 号。
+    /// 弹出框/连接管理器不符合此格式,据此过滤掉。
+    private func isSessionWindow(_ title: String) -> Bool {
+        title.range(of: #"\(\d+\) \(\d+\)$"#, options: .regularExpression) != nil
+    }
+
     /// 系统的出现序号(第 0、1、2… 个出现的系统),供 UI 按顺序分配颜色,避免哈希撞色
     func systemIndex(for title: String) -> Int {
         systemOrderSeen[systemID(title)] ?? 0
@@ -195,13 +204,17 @@ final class SAPWindowManager: ObservableObject {
     // MARK: - 切换
 
     func focus(_ window: SAPWindow) {
-        if let app = NSRunningApplication(processIdentifier: window.pid) {
-            app.activate(options: [.activateIgnoringOtherApps])
-        }
-        AXUIElementPerformAction(window.axElement, kAXRaiseAction as CFString)
-        // 再设一次 main/focused,确保键盘输入进到这个窗口
-        AXUIElementSetAttributeValue(window.axElement, kAXMainAttribute as CFString, kCFBooleanTrue)
+        // 先把高亮切过去,UI 立即响应,不等跨进程 AX 调用
         frontWindowID = window.id
+
+        // 先在 App 内部把目标窗口抬到最前并设为 main,
+        // 再激活整个 App。顺序反了会先激活 App、动画期间 raise 作用在旧窗口上,
+        // 看起来就"慢半拍"。
+        AXUIElementPerformAction(window.axElement, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(window.axElement, kAXMainAttribute as CFString, kCFBooleanTrue)
+        if let app = NSRunningApplication(processIdentifier: window.pid) {
+            app.activate()
+        }
     }
 
     /// 关闭指定窗口(点其标题栏的关闭按钮)

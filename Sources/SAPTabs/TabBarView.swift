@@ -43,9 +43,13 @@ struct TabBarView: View {
             isActive: win.id == manager.frontWindowID,
             leadingBoundary: idx > 0 && isSystemBoundary(at: idx)
         )
-        .onTapGesture(count: 2) { manager.close(win) }
         .onTapGesture { manager.focus(win) }
-        .help("\(win.title)\n单击切换 · 双击关闭")
+        .contextMenu {
+            Button(role: .destructive) { manager.close(win) } label: {
+                Label("关闭", systemImage: "xmark")
+            }
+        }
+        .help("\(win.title)\n单击切换 · 右键关闭")
     }
 
     // 当前页签与上一个页签系统 ID 不同时,即为系统组边界
