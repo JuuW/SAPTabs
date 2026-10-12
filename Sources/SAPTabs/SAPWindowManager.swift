@@ -13,6 +13,12 @@ struct SAPWindow: Identifiable, Equatable {
     static func == (lhs: SAPWindow, rhs: SAPWindow) -> Bool {
         lhs.id == rhs.id
     }
+
+    // 显示内容是否完全一致(含 tcode/title)。用于判断页签是否真的需要重绘,
+    // 避免每秒 refresh 即便内容没变也推送 @Published 变更、触发溢出布局抖动。
+    func displayEquals(_ other: SAPWindow) -> Bool {
+        id == other.id && title == other.title && tcode == other.tcode
+    }
 }
 
 /// 负责枚举 SAP GUI 窗口、读取标题、切换聚焦
@@ -168,8 +174,22 @@ final class SAPWindowManager: ObservableObject {
             return (orderSeen[a.id] ?? 0) < (orderSeen[b.id] ?? 0)
         }
 
-        windows = result
-        frontWindowID = frontID
+        // 仅在内容真正变化时才赋值。每秒 refresh 若无脑替换 @Published 数组,
+        // 即便窗口集合和 TCode 都没变,也会每秒触发重绘 → 溢出布局反复重算 →
+        // 下拉按钮/菜单不停闪烁(菜单打开时尤为明显)。深比较后无变化则跳过。
+        if !sameWindows(windows, result) {
+            windows = result
+        }
+        if frontWindowID != frontID {
+            frontWindowID = frontID
+        }
+    }
+
+    /// 两个窗口列表的显示内容是否完全一致(顺序 + id + title + tcode)
+    private func sameWindows(_ a: [SAPWindow], _ b: [SAPWindow]) -> Bool {
+        guard a.count == b.count else { return false }
+        for (x, y) in zip(a, b) where !x.displayEquals(y) { return false }
+        return true
     }
 
     /// 为 AX 元素返回其在同 key(标题@位置)下的稳定区分号及条目索引。
@@ -189,6 +209,17 @@ final class SAPWindowManager: ObservableObject {
     /// 系统 ID:取窗口标题前三个字符(如 "I72 (1) (001)" → "I72")
     func systemID(_ title: String) -> String {
         String(title.prefix(3))
+    }
+
+    /// 完整显示标签:系统 ID + 当前事务码(如 "DWC /SCWM/MON")。
+    /// 读不到事务码时只显系统 ID。供溢出下拉菜单等"扁平列表、无分组标签"的场景用;
+    /// 页签本身因有独立的系统 ID 组标签,正文只显 TCode,不走这里。
+    func fullLabel(for window: SAPWindow) -> String {
+        let sys = systemID(window.title)
+        if let code = window.tcode, !code.isEmpty {
+            return "\(sys) \(code)"
+        }
+        return sys
     }
 
     /// 判定是否为 SAP 会话窗口。会话标题形如 "EUP (1) (300)":

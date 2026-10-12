@@ -118,6 +118,8 @@ struct TabChip: View {
                 Text(sys)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                    .fixedSize()               // 永远按内容完整显示,不被布局压缩成 "D..."
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
@@ -143,15 +145,15 @@ struct TabChip: View {
             // 分割线位置不会因点击加粗而右移。
             ZStack {
                 Text(title)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(.system(size: 13, weight: .bold))
                     .hidden()
                 Text(title)
-                    .font(.system(size: 14, weight: isActive ? .bold : .regular))
+                    .font(.system(size: 13, weight: isActive ? .bold : .regular))
                     .foregroundStyle(Color.primary)
             }
             .lineLimit(1)
         }
-        .padding(.horizontal, 11)
+        .padding(.horizontal, 6)
         .frame(maxHeight: .infinity)
         .background(
             UnevenRoundedRectangle(
@@ -176,7 +178,11 @@ final class OverflowState: ObservableObject {
 struct OverflowTabsLayout: Layout {
     let count: Int                 // 页签数量(不含溢出按钮)
     let reserve: CGFloat           // 需要溢出时为溢出按钮预留的宽度
-    @ObservedObject var state: OverflowState
+    // 普通引用,不是 @ObservedObject:Layout 只"写入"计算出的 visibleCount,
+    // 绝不能"观察"它。否则 setVisible 改 visibleCount → Layout 重跑 → 又 setVisible,
+    // 形成自激振荡(表现为溢出按钮/菜单不停闪烁)。布局重跑只应由 bounds/子视图
+    // 尺寸变化驱动,这由 SwiftUI 自身管理。
+    let state: OverflowState
 
     init(count: Int, reserve: CGFloat, state: OverflowState) {
         self.count = count
@@ -191,6 +197,20 @@ struct OverflowTabsLayout: Layout {
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
         guard count > 0, subviews.count == count + 1 else { return }
+        // SwiftUI 布局过程中会用 width=0 之类的中间提议来探测尺寸。若拿这些
+        // 无意义的瞬时宽度去 setVisible,会让 visibleCount 在真实值(如 12)和
+        // "一个都放不下"(1)之间每帧翻转,写回 @Published 触发溢出菜单重绘 →
+        // 永不收敛的闪烁。因此:宽度不足以放下任何内容时,只做占位摆放,
+        // 绝不更新 visibleCount。
+        guard bounds.width > reserve else {
+            for i in 0..<count {
+                subviews[i].place(at: CGPoint(x: bounds.minX, y: bounds.midY),
+                                  anchor: .leading, proposal: ProposedViewSize(width: 0, height: 0))
+            }
+            subviews[count].place(at: CGPoint(x: bounds.minX, y: bounds.midY),
+                                   anchor: .leading, proposal: ProposedViewSize(width: 0, height: 0))
+            return
+        }
         let tabWidths = (0..<count).map { subviews[$0].sizeThatFits(.unspecified).width }
         let total = tabWidths.reduce(0, +)
         let avail = bounds.width
@@ -285,10 +305,7 @@ struct OverflowMenuView: View {
             if !items.isEmpty {
                 Menu {
                     ForEach(items) { win in
-                        Button { manager.focus(win) } label: { Text(win.title) }
-                        Button(role: .destructive) { manager.close(win) } label: {
-                            Label("关闭 \(win.title)", systemImage: "xmark")
-                        }
+                        Button { manager.focus(win) } label: { Text(manager.fullLabel(for: win)) }
                     }
                 } label: {
                     HStack(spacing: 2) {
