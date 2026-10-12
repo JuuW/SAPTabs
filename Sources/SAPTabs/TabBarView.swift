@@ -38,10 +38,13 @@ struct TabBarView: View {
     }
 
     private func chip(win: SAPWindow, idx: Int) -> some View {
-        TabChip(
-            title: shortTitle(win.title),
+        // 组首(与上一页签系统不同,或第 0 个)在页签前显示一次系统 ID 标签,
+        // 组内其余页签不再重复系统 ID,只显 TCode
+        let isGroupHead = idx == 0 || isSystemBoundary(at: idx)
+        return TabChip(
+            title: displayLabel(win),
             isActive: win.id == manager.frontWindowID,
-            leadingBoundary: idx > 0 && isSystemBoundary(at: idx)
+            leadingSystemID: isGroupHead ? manager.systemID(win.title) : nil
         )
         .onTapGesture { manager.focus(win) }
         .contextMenu {
@@ -82,10 +85,15 @@ struct TabBarView: View {
         .frame(maxWidth: .infinity)
     }
 
-    /// SAP 窗口标题常形如 "I72 (1) (001)",去掉末尾 5 个字符(会话号 " (001)")
-    private func shortTitle(_ t: String) -> String {
-        guard t.count > 5 else { return t }
-        return String(t.dropLast(5))
+    /// 页签正文:只显当前事务码(如 "/SCWM/MON")。系统 ID 由组首标签单独显示,
+    /// 这里不再重复。读不到事务码时(登录屏/弹窗/主屏)回退显示系统 ID,避免空白。
+    /// 注意:仅用于显示。窗口身份与焦点匹配始终走 id / AX 元素身份,
+    /// 两个页签即便显示文本相同也不会焦点混淆。
+    private func displayLabel(_ win: SAPWindow) -> String {
+        if let code = win.tcode, !code.isEmpty {
+            return code
+        }
+        return manager.systemID(win.title)
     }
 }
 
@@ -97,7 +105,7 @@ private final class HoverState: ObservableObject {
 struct TabChip: View {
     let title: String
     let isActive: Bool
-    var leadingBoundary: Bool = false
+    var leadingSystemID: String? = nil   // 组首页签在前面显示一次系统 ID 标签
     var onClose: () -> Void = {}
 
     @StateObject private var hover = HoverState()
@@ -105,12 +113,19 @@ struct TabChip: View {
     var body: some View {
         let hovering = hover.on
         return HStack(spacing: 0) {
-            // 前导:跨系统边界画竖线,同系统留小间距
-            if leadingBoundary {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.65))
-                    .frame(width: 2, height: 16)
-                    .padding(.horizontal, 5)
+            // 组首:在页签前画系统 ID 标签(同系统只出现一次);非组首留小间距
+            if let sys = leadingSystemID {
+                Text(sys)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color(red: 0.12, green: 0.33, blue: 0.65))
+                    )
+                    .padding(.leading, 6)
+                    .padding(.trailing, 3)
             } else {
                 Color.clear.frame(width: 2, height: 1)
             }

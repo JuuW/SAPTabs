@@ -4,10 +4,12 @@ import ApplicationServices
 /// 代表一个 SAP GUI 窗口
 struct SAPWindow: Identifiable, Equatable {
     let id: String          // 用窗口标题 + 索引做稳定标识
-    let title: String       // 显示在页签上的标题
+    let title: String       // 原始窗口标题(如 "DWC (1) (010)"),用于分组/提示/身份
+    let tcode: String?      // 当前事务码(如 "/SCWM/MON"),仅用于显示,读不到为 nil
     let axElement: AXUIElement
     let pid: pid_t
 
+    // 身份只看 id。tcode/title 变化不改变窗口是谁,避免显示文本混入身份判断
     static func == (lhs: SAPWindow, rhs: SAPWindow) -> Bool {
         lhs.id == rhs.id
     }
@@ -126,7 +128,7 @@ final class SAPWindowManager: ObservableObject {
                 liveDiscIdx.insert(idx)
                 if disc > 0 { wid = "\(wid)#\(disc)" }
 
-                result.append(SAPWindow(id: wid, title: title, axElement: win, pid: app.processIdentifier))
+                result.append(SAPWindow(id: wid, title: title, tcode: readTransactionCode(win), axElement: win, pid: app.processIdentifier))
 
                 // 按 AX 元素身份匹配聚焦窗口,避免同标题窗口一起高亮
                 if let fe = focusedElement, CFEqual(fe, win), frontID == nil {
@@ -235,6 +237,64 @@ final class SAPWindowManager: ObservableObject {
         let err = AXUIElementCopyAttributeValue(element, attr as CFString, &ref)
         guard err == .success else { return nil }
         return ref as? String
+    }
+
+    /// 读取窗口当前事务码,如 "/SCWM/MON"。读不到(登录屏/弹窗/主屏)返回 nil。
+    ///
+    /// 数据来源:状态栏那个系统信息下拉。它是**窗口的直接子节点**,
+    /// 特征为 AXComboBox + desc="Show menu",其 value 形如 "System DWC"
+    /// (有时直接是 "Transaction SE38")。真正的事务码在它子树里一行
+    /// AXRow,desc 形如 "Transaction /SCWM/MON"。
+    ///
+    /// 关键:只在这一个 ComboBox 的子树里找,绝不遍历整窗口——主数据区的
+    /// 字段子树单窗口可达近两万节点,盲目遍历会让每秒刷新卡死(实测 >1s)。
+    /// 定位到 ComboBox 后其子树很小,查找开销可忽略。
+    private func readTransactionCode(_ window: AXUIElement) -> String? {
+        // 1. 在窗口直接子节点里找信息下拉 ComboBox
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let topChildren = childrenRef as? [AXUIElement] else { return nil }
+
+        for child in topChildren {
+            guard copyStringAttribute(child, kAXRoleAttribute) == "AXComboBox",
+                  copyStringAttribute(child, kAXDescriptionAttribute) == "Show menu" else { continue }
+
+            // 快速路径:ComboBox 的 value 有时直接就是 "Transaction SE38"
+            if let v = copyStringAttribute(child, kAXValueAttribute),
+               let code = tcode(fromDescription: v) {
+                return code
+            }
+            // 否则在这个 ComboBox 的(很小的)子树里找 Transaction 行
+            return findTransactionRow(child, depth: 0)
+        }
+        return nil
+    }
+
+    /// 在给定元素子树内找 "Transaction xxx" 行,返回事务码。限定浅层深度即可。
+    private func findTransactionRow(_ el: AXUIElement, depth: Int) -> String? {
+        if depth > 8 { return nil }
+        if copyStringAttribute(el, kAXRoleAttribute) == "AXRow",
+           let desc = copyStringAttribute(el, kAXDescriptionAttribute),
+           let code = tcode(fromDescription: desc) {
+            return code
+        }
+        var childrenRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+           let kids = childrenRef as? [AXUIElement] {
+            for k in kids {
+                if let found = findTransactionRow(k, depth: depth + 1) { return found }
+            }
+        }
+        return nil
+    }
+
+    /// 从 "Transaction /SCWM/MON" 这类字符串里取出事务码;
+    /// 不是 Transaction 行、或码为空(登录屏显示 "Transaction ")则返回 nil
+    private func tcode(fromDescription desc: String) -> String? {
+        let prefix = "Transaction "
+        guard desc.hasPrefix(prefix) else { return nil }
+        let code = String(desc.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+        return code.isEmpty ? nil : code
     }
 
     /// 读取窗口在屏幕上的位置(不随 z-order 变化),用于稳定区分同标题窗口
