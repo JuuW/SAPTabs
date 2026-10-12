@@ -258,6 +258,83 @@ final class SAPWindowManager: ObservableObject {
         }
     }
 
+    /// 向当前前台 SAP 会话的 OK Code(命令)输入框填入文本,可选回车执行。
+    ///
+    /// SAP GUI for Java 的命令框**不接受** AXSetValue 直接写值(调用返回成功但值不进去),
+    /// 必须:先把该字段设为 AXFocused,再用 CGEvent 键盘事件逐字符键入。回读 AXValue 可确认。
+    /// 定位:前台会话窗口 → system toolbar 子节点 → AXTextField 且 desc="command field"。
+    func writeCommand(_ text: String, execute: Bool) {
+        guard accessibilityGranted else { return }
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.localizedName == processName || $0.bundleURL?.lastPathComponent.contains(processName) == true
+        }
+        guard let app = apps.first(where: { $0.isActive }) ?? apps.first else { return }
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+
+        var fref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &fref) == .success,
+              let fw = fref else { return }
+        let win = fw as! AXUIElement
+        guard let field = commandField(in: win) else { return }
+
+        // 激活 App 并聚焦命令框(SAP Java 控件只认键盘事件,必须先拿到焦点)
+        app.activate()
+        usleep(120_000)
+        AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        usleep(120_000)
+
+        let src = CGEventSource(stateID: .combinedSessionState)
+        for ch in text.unicodeScalars {
+            var u = UniChar(ch.value)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)
+            down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u)
+            down?.post(tap: .cghidEventTap)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
+            up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u)
+            up?.post(tap: .cghidEventTap)
+            usleep(15_000)
+        }
+
+        if execute {
+            usleep(60_000)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: true) // Return
+            down?.post(tap: .cghidEventTap)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: false)
+            up?.post(tap: .cghidEventTap)
+        }
+    }
+
+    /// 读取当前前台 SAP 会话正在运行的事务码,读不到返回 nil
+    func frontmostTCode() -> String? {
+        guard accessibilityGranted else { return nil }
+        let apps = NSWorkspace.shared.runningApplications.filter {
+            $0.localizedName == processName || $0.bundleURL?.lastPathComponent.contains(processName) == true
+        }
+        guard let app = apps.first(where: { $0.isActive }) ?? apps.first else { return nil }
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        var fref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &fref) == .success,
+              let fw = fref else { return nil }
+        return readTransactionCode(fw as! AXUIElement)
+    }
+
+    /// 在会话窗口里定位 OK Code 命令输入框(system toolbar 下的 command field)
+    private func commandField(in window: AXUIElement) -> AXUIElement? {
+        var topRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &topRef) == .success,
+              let top = topRef as? [AXUIElement] else { return nil }
+        for tb in top where copyStringAttribute(tb, kAXDescriptionAttribute) == "system toolbar" {
+            var kidsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(tb, kAXChildrenAttribute as CFString, &kidsRef) == .success,
+                  let kids = kidsRef as? [AXUIElement] else { continue }
+            for c in kids where copyStringAttribute(c, kAXRoleAttribute) == "AXTextField"
+                && copyStringAttribute(c, kAXDescriptionAttribute) == "command field" {
+                return c
+            }
+        }
+        return nil
+    }
+
     /// 关闭指定窗口(点其标题栏的关闭按钮)
     func close(_ window: SAPWindow) {
         var btnRef: CFTypeRef?

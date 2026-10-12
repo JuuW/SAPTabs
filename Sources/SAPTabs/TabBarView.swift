@@ -3,6 +3,7 @@ import AppKit
 
 struct TabBarView: View {
     @ObservedObject var manager: SAPWindowManager
+    @ObservedObject var tcodeStore: TCodeStore
     @StateObject private var overflow = OverflowState()
 
     var body: some View {
@@ -28,12 +29,16 @@ struct TabBarView: View {
     }
 
     private var tabs: some View {
-        OverflowTabsLayout(count: manager.windows.count, reserve: 40, state: overflow) {
-            // 子视图顺序:所有页签,最后一个是溢出按钮
-            ForEach(Array(manager.windows.enumerated()), id: \.element.id) { idx, win in
-                chip(win: win, idx: idx)
+        HStack(spacing: 0) {
+            // 最左:TCode 收藏下拉(字母序列表 + Add tcode)
+            TCodeMenuView(manager: manager, store: tcodeStore)
+            OverflowTabsLayout(count: manager.windows.count, reserve: 40, state: overflow) {
+                // 子视图顺序:所有页签,最后一个是溢出按钮
+                ForEach(Array(manager.windows.enumerated()), id: \.element.id) { idx, win in
+                    chip(win: win, idx: idx)
+                }
+                OverflowMenuView(manager: manager, state: overflow)
             }
-            OverflowMenuView(manager: manager, state: overflow)
         }
     }
 
@@ -287,7 +292,181 @@ struct OverflowTabsLayout: Layout {
     }
 }
 
-/// 右端溢出按钮:下拉列出放不下的页签,可切换与关闭
+/// 页签栏最左侧的 TCode 收藏下拉:向下三角按钮,点开列出配置文件里的事务码
+/// (字母序),点击某项即填入当前前台会话的 OK Code 框并回车执行;
+/// 末行 "Add tcode" 抓当前会话正在跑的事务码加入列表,已存在则弹消息框提示。
+///
+/// 用原生 NSMenu(经 NSViewRepresentable 包一个按钮弹出)+ 标准 NSMenuItem:
+/// 外观为系统原生、点击可靠。给菜单设 .aqua 外观以避免 vibrancy 半透明。
+struct TCodeMenuView: View {
+    @ObservedObject var manager: SAPWindowManager
+    @ObservedObject var store: TCodeStore
+
+    var body: some View {
+        NativeTCodeButton(manager: manager, store: store)
+            .fixedSize()
+            .padding(.trailing, 4)
+            .help("事务码收藏:点选填入当前会话并执行(按住 Option 用 /n 当前窗口切换)")
+    }
+}
+
+/// 承载 NSMenu 的三角按钮
+private struct NativeTCodeButton: NSViewRepresentable {
+    let manager: SAPWindowManager
+    let store: TCodeStore
+
+    func makeCoordinator() -> Coordinator { Coordinator(manager: manager, store: store) }
+
+    func makeNSView(context: Context) -> NSButton {
+        let btn = NSButton()
+        btn.bezelStyle = .texturedRounded
+        btn.isBordered = false
+        btn.imagePosition = .imageOnly
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .heavy)
+        btn.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "TCode")?
+            .withSymbolConfiguration(cfg)
+        btn.contentTintColor = NSColor(red: 0.12, green: 0.33, blue: 0.65, alpha: 1)
+        btn.target = context.coordinator
+        btn.action = #selector(Coordinator.popMenu(_:))
+        btn.wantsLayer = true
+        btn.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.6).cgColor
+        btn.layer?.cornerRadius = 6
+        return btn
+    }
+
+    func updateNSView(_ nsView: NSButton, context: Context) {
+        context.coordinator.manager = manager
+        context.coordinator.store = store
+    }
+
+    final class Coordinator: NSObject, NSMenuDelegate {
+        var manager: SAPWindowManager
+        var store: TCodeStore
+
+        init(manager: SAPWindowManager, store: TCodeStore) {
+            self.manager = manager
+            self.store = store
+        }
+
+        /// 菜单打开后,给它的宿主窗口垫一层不透明底色,盖住 vibrancy 透出的后方内容
+        func menuDidClose(_ menu: NSMenu) {}
+        func menuWillOpen(_ menu: NSMenu) {
+            // 菜单窗口此刻可能还没就位,下一轮 runloop 再处理
+            DispatchQueue.main.async {
+                for win in NSApp.windows where String(describing: type(of: win)).contains("NSMenuWindow")
+                    || String(describing: type(of: win)).contains("NSPopupMenuWindow") {
+                    guard let content = win.contentView else { continue }
+                    win.isOpaque = false
+                    // 在内容视图最底层插入一个不透明白色底板
+                    if content.subviews.first(where: { $0.identifier?.rawValue == "opaqueBG" }) == nil {
+                        let bg = NSView(frame: content.bounds)
+                        bg.identifier = NSUserInterfaceItemIdentifier("opaqueBG")
+                        bg.autoresizingMask = [.width, .height]
+                        bg.wantsLayer = true
+                        bg.layer?.backgroundColor = NSColor.white.cgColor
+                        content.addSubview(bg, positioned: .below, relativeTo: content.subviews.first)
+                    }
+                }
+            }
+        }
+
+        @objc func popMenu(_ sender: NSButton) {
+            let menu = buildMenu(for: store.root, path: [])
+            let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
+            menu.popUp(positioning: nil, at: origin, in: sender)
+        }
+
+        /// 递归构建某一级菜单:先列该级节点(文件夹→子菜单,TCode→可点击叶子),
+        /// 末尾加分隔线 + Add TCode + Add Folder(都作用于本级 path)。
+        private func buildMenu(for nodes: [TCodeNode], path: [String]) -> NSMenu {
+            let menu = NSMenu()
+            menu.appearance = NSAppearance(named: .aqua)   // 避免 vibrancy 半透明
+            menu.delegate = self
+
+            for node in nodes {
+                switch node {
+                case .code(let code):
+                    let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = code
+                    menu.addItem(item)
+                case .folder(let name, let children):
+                    let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
+                    // 文件夹用加粗字体区分普通 TCode 项
+                    item.attributedTitle = NSAttributedString(string: name, attributes: [
+                        .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+                    ])
+                    item.submenu = buildMenu(for: children, path: path + [name])
+                    menu.addItem(item)
+                }
+            }
+
+            menu.addItem(.separator())
+            let addCode = NSMenuItem(title: "Add TCode", action: #selector(addCurrentTCode(_:)), keyEquivalent: "")
+            addCode.target = self
+            addCode.representedObject = path
+            menu.addItem(addCode)
+            let addFolder = NSMenuItem(title: "Add Folder", action: #selector(addFolder(_:)), keyEquivalent: "")
+            addFolder.target = self
+            addFolder.representedObject = path
+            menu.addItem(addFolder)
+            return menu
+        }
+
+        /// 点选事务码:默认加 /o(另开新窗口),按住 Option(Alt)则 /n(当前窗口切新事务)
+        @objc private func runTCode(_ sender: NSMenuItem) {
+            guard let code = sender.representedObject as? String else { return }
+            let opt = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
+            manager.writeCommand((opt ? "/n" : "/o") + code, execute: true)
+        }
+
+        /// 抓当前前台会话正在跑的事务码加入到该级;成功静默,读不到/已存在则弹提示
+        @objc private func addCurrentTCode(_ sender: NSMenuItem) {
+            let path = sender.representedObject as? [String] ?? []
+            guard let code = manager.frontmostTCode(), !code.isEmpty else {
+                alert("无法添加", "当前前台会话没有正在运行的事务码(可能停在登录屏或主屏)。")
+                return
+            }
+            if !store.addCode(code, at: path) {
+                alert("已存在", "事务码 \"\(code)\" 已在该文件夹中。")
+            }
+        }
+
+        /// 在该级新建文件夹:弹框输入名字,重名则提示
+        @objc private func addFolder(_ sender: NSMenuItem) {
+            let path = sender.representedObject as? [String] ?? []
+            guard let name = promptForFolderName(), !name.isEmpty else { return }
+            if !store.addFolder(name, at: path) {
+                alert("已存在", "文件夹 \"\(name)\" 已在该层级中。")
+            }
+        }
+
+        /// 弹出带输入框的对话框,返回用户输入的文件夹名(取消返回 nil)
+        private func promptForFolderName() -> String? {
+            let a = NSAlert()
+            a.messageText = "新建文件夹"
+            a.informativeText = "请输入文件夹名称:"
+            a.addButton(withTitle: "确定")
+            a.addButton(withTitle: "取消")
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+            field.placeholderString = "文件夹名"
+            a.accessoryView = field
+            a.window.initialFirstResponder = field
+            return a.runModal() == .alertFirstButtonReturn
+                ? field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+        }
+
+        private func alert(_ title: String, _ msg: String) {
+            let a = NSAlert()
+            a.messageText = title
+            a.informativeText = msg
+            a.addButton(withTitle: "好")
+            a.runModal()
+        }
+    }
+}
+
 struct OverflowMenuView: View {
     @ObservedObject var manager: SAPWindowManager
     @ObservedObject var state: OverflowState

@@ -3,6 +3,7 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let manager = SAPWindowManager()
+    private let tcodeStore = TCodeStore()
     private var panel: NSPanel!
     private var statusItem: NSStatusItem!
 
@@ -45,7 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupPanel() {
-        let hosting = NSHostingView(rootView: TabBarView(manager: manager))
+        let hosting = NSHostingView(rootView: TabBarView(manager: manager, tcodeStore: tcodeStore))
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 28),
