@@ -16,7 +16,7 @@ struct TabBarView: View {
                 tabs
             }
         }
-        .padding(.horizontal, 8)
+        .padding(.trailing, 8)
         .padding(.vertical, 2)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(red: 0.82, green: 0.90, blue: 0.98))
@@ -39,7 +39,9 @@ struct TabBarView: View {
                 }
                 OverflowMenuView(manager: manager, state: overflow)
             }
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func chip(win: SAPWindow, idx: Int) -> some View {
@@ -304,9 +306,23 @@ struct TCodeMenuView: View {
 
     var body: some View {
         NativeTCodeButton(manager: manager, store: store)
-            .fixedSize()
+            .frame(width: 33)
+            .frame(maxHeight: .infinity)
+            .padding(.vertical, -2)
             .padding(.trailing, 4)
             .help("事务码收藏:点选填入当前会话并执行(按住 Option 用 /n 当前窗口切换)")
+    }
+}
+
+/// 删除菜单项携带的上下文:在哪一级路径、删的是哪个名字、是不是文件夹
+private final class DeleteContext {
+    let path: [String]
+    let name: String
+    let isFolder: Bool
+    init(path: [String], name: String, isFolder: Bool) {
+        self.path = path
+        self.name = name
+        self.isFolder = isFolder
     }
 }
 
@@ -323,7 +339,7 @@ private struct NativeTCodeButton: NSViewRepresentable {
         btn.isBordered = false
         btn.imagePosition = .imageOnly
         let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .heavy)
-        btn.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: "TCode")?
+        btn.image = NSImage(systemSymbolName: "line.3.horizontal", accessibilityDescription: "TCode")?
             .withSymbolConfiguration(cfg)
         btn.contentTintColor = NSColor(red: 0.12, green: 0.33, blue: 0.65, alpha: 1)
         btn.target = context.coordinator
@@ -410,6 +426,34 @@ private struct NativeTCodeButton: NSViewRepresentable {
             addFolder.target = self
             addFolder.representedObject = path
             menu.addItem(addFolder)
+
+            // 删除入口:显示为 Delete,子菜单列出本级每一项,点击即删
+            if !nodes.isEmpty {
+                let del = NSMenuItem(title: "Delete", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                sub.appearance = NSAppearance(named: .aqua)
+                sub.delegate = self
+                for node in nodes {
+                    switch node {
+                    case .code(let code):
+                        let it = NSMenuItem(title: code, action: #selector(deleteNode(_:)), keyEquivalent: "")
+                        it.target = self
+                        it.representedObject = DeleteContext(path: path, name: code, isFolder: false)
+                        sub.addItem(it)
+                    case .folder(let name, _):
+                        let it = NSMenuItem(title: name, action: #selector(deleteNode(_:)), keyEquivalent: "")
+                        it.attributedTitle = NSAttributedString(
+                            string: name,
+                            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
+                        )
+                        it.target = self
+                        it.representedObject = DeleteContext(path: path, name: name, isFolder: true)
+                        sub.addItem(it)
+                    }
+                }
+                del.submenu = sub
+                menu.addItem(del)
+            }
             return menu
         }
 
@@ -438,6 +482,22 @@ private struct NativeTCodeButton: NSViewRepresentable {
             guard let name = promptForFolderName(), !name.isEmpty else { return }
             if !store.addFolder(name, at: path) {
                 alert("已存在", "文件夹 \"\(name)\" 已在该层级中。")
+            }
+        }
+
+        /// 删除某项:文件夹删除前确认(会连同子内容一起删),TCode 直接删
+        @objc private func deleteNode(_ sender: NSMenuItem) {
+            guard let ctx = sender.representedObject as? DeleteContext else { return }
+            if ctx.isFolder {
+                let a = NSAlert()
+                a.messageText = "删除文件夹"
+                a.informativeText = "确定删除文件夹 \"\(ctx.name)\" 及其全部内容?"
+                a.addButton(withTitle: "删除")
+                a.addButton(withTitle: "取消")
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+                store.removeFolder(ctx.name, at: ctx.path)
+            } else {
+                store.removeCode(ctx.name, at: ctx.path)
             }
         }
 

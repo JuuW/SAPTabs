@@ -93,6 +93,46 @@ final class TCodeStore: ObservableObject {
 
     // MARK: - 内部
 
+    /// 删除 path 层级下的某个事务码
+    @discardableResult
+    func removeCode(_ code: String, at path: [String]) -> Bool {
+        mutate(at: path) { children in
+            let before = children.count
+            children.removeAll {
+                if case .code(let c) = $0 { return c.caseInsensitiveCompare(code) == .orderedSame }
+                return false
+            }
+            return children.count != before
+        }
+    }
+
+    /// 删除 path 层级下的某个文件夹(连同其所有子内容)
+    @discardableResult
+    func removeFolder(_ name: String, at path: [String]) -> Bool {
+        mutate(at: path) { children in
+            let before = children.count
+            children.removeAll {
+                if case .folder(let n, _) = $0 { return n.caseInsensitiveCompare(name) == .orderedSame }
+                return false
+            }
+            return children.count != before
+        }
+    }
+
+    /// 返回 path 层级下的直接子节点(供删除菜单列出本级各项)
+    func children(at path: [String]) -> [TCodeNode] {
+        var nodes = root
+        for name in path {
+            guard let next = nodes.first(where: {
+                if case .folder(let n, _) = $0 { return n.caseInsensitiveCompare(name) == .orderedSame }
+                return false
+            }), case .folder(_, let kids) = next else { return [] }
+            nodes = kids
+        }
+        return nodes
+    }
+
+
     /// 定位到 path 指向的子节点数组,交给 body 修改(返回是否发生有效改动)。
     /// 改动后对该级排序并落盘。
     private func mutate(at path: [String], _ body: (inout [TCodeNode]) -> Bool) -> Bool {
