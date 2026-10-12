@@ -402,10 +402,18 @@ private struct NativeTCodeButton: NSViewRepresentable {
             for node in nodes {
                 switch node {
                 case .code(let code):
+                    // 常态项:直接显示事务码
                     let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
                     item.target = self
                     item.representedObject = code
                     menu.addItem(item)
+                    // Alt 替身项:按住 Option 时顶替上面那项显示,标题前加小写 /n 作提示
+                    let alt = NSMenuItem(title: "/n" + code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                    alt.target = self
+                    alt.representedObject = code
+                    alt.keyEquivalentModifierMask = .option
+                    alt.isAlternate = true
+                    menu.addItem(alt)
                 case .folder(let name, let children):
                     let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
                     // 文件夹用加粗字体区分普通 TCode 项
