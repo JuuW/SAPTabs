@@ -166,11 +166,19 @@ final class SAPWindowManager: ObservableObject {
             }
         }
 
-        // 两级排序:主键=系统首次出现序号,次键=窗口打开序号
+        // 三级排序:
+        //  主键=系统首次出现序号(同系统聚在一起)
+        //  次键=组内按 TCode 字母序(不区分大小写);读不到 TCode 的(登录屏/弹窗/主屏)
+        //       统一视为空串,排在该组最前
+        //  末键=窗口打开序号,仅用于打破 TCode 相同时的平局,保证排序稳定、不随 z-order 漂移
         result.sort { a, b in
             let sa = systemOrderSeen[systemID(a.title)] ?? 0
             let sb = systemOrderSeen[systemID(b.title)] ?? 0
             if sa != sb { return sa < sb }
+            let ca = a.tcode ?? ""
+            let cb = b.tcode ?? ""
+            let cmp = ca.localizedCaseInsensitiveCompare(cb)
+            if cmp != .orderedSame { return cmp == .orderedAscending }
             return (orderSeen[a.id] ?? 0) < (orderSeen[b.id] ?? 0)
         }
 
