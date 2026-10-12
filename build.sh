@@ -20,6 +20,11 @@ mkdir -p "${BUNDLE}/Contents/Resources"
 
 cp "${BIN_PATH}" "${BUNDLE}/Contents/MacOS/${BIN_NAME}"
 
+# 应用图标(放仓库 Resources/AppIcon.icns,随打包拷入)
+if [ -f "Resources/AppIcon.icns" ]; then
+    cp "Resources/AppIcon.icns" "${BUNDLE}/Contents/Resources/AppIcon.icns"
+fi
+
 cat > "${BUNDLE}/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -31,6 +36,8 @@ cat > "${BUNDLE}/Contents/Info.plist" <<PLIST
     <string>${APP_NAME}</string>
     <key>CFBundleExecutable</key>
     <string>${BIN_NAME}</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>local.saptabs</string>
     <key>CFBundleVersion</key>

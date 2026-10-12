@@ -464,13 +464,13 @@ private struct NativeTCodeButton: NSViewRepresentable {
             manager.writeCommand((opt ? "/n" : "/o") + code, execute: true)
         }
 
-        /// 抓当前前台会话正在跑的事务码加入到该级;成功静默,读不到/已存在则弹提示
+        /// 弹框手工输入事务码,加入到该级;空输入忽略,已存在则提示
         @objc private func addCurrentTCode(_ sender: NSMenuItem) {
             let path = sender.representedObject as? [String] ?? []
-            guard let code = manager.frontmostTCode(), !code.isEmpty else {
-                alert("无法添加", "当前前台会话没有正在运行的事务码(可能停在登录屏或主屏)。")
-                return
-            }
+            guard let code = promptForText(title: "添加事务码",
+                                           message: "请输入事务码:",
+                                           placeholder: "事务码"),
+                  !code.isEmpty else { return }
             if !store.addCode(code, at: path) {
                 alert("已存在", "事务码 \"\(code)\" 已在该文件夹中。")
             }
@@ -479,7 +479,10 @@ private struct NativeTCodeButton: NSViewRepresentable {
         /// 在该级新建文件夹:弹框输入名字,重名则提示
         @objc private func addFolder(_ sender: NSMenuItem) {
             let path = sender.representedObject as? [String] ?? []
-            guard let name = promptForFolderName(), !name.isEmpty else { return }
+            guard let name = promptForText(title: "新建文件夹",
+                                           message: "请输入文件夹名称:",
+                                           placeholder: "文件夹名"),
+                  !name.isEmpty else { return }
             if !store.addFolder(name, at: path) {
                 alert("已存在", "文件夹 \"\(name)\" 已在该层级中。")
             }
@@ -501,20 +504,9 @@ private struct NativeTCodeButton: NSViewRepresentable {
             }
         }
 
-        /// 弹出带输入框的对话框,返回用户输入的文件夹名(取消返回 nil)
-        private func promptForFolderName() -> String? {
-            let a = NSAlert()
-            a.messageText = "新建文件夹"
-            a.informativeText = "请输入文件夹名称:"
-            a.addButton(withTitle: "确定")
-            a.addButton(withTitle: "取消")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
-            field.placeholderString = "文件夹名"
-            a.accessoryView = field
-            a.window.initialFirstResponder = field
-            return a.runModal() == .alertFirstButtonReturn
-                ? field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-                : nil
+        /// 弹出紧凑的输入小窗口(无图标、无多余留白),返回用户输入(去空白;取消返回 nil)
+        private func promptForText(title: String, message: String, placeholder: String) -> String? {
+            return TextPrompt.run(title: title, message: message, placeholder: placeholder)
         }
 
         private func alert(_ title: String, _ msg: String) {
@@ -568,5 +560,96 @@ struct OverflowMenuView: View {
             }
         }
         .frame(width: 40, height: 24)
+    }
+}
+
+/// 紧凑的单行输入弹窗:只有标题、输入框、确定/取消两个按钮,无图标、无多余留白。
+/// 用 NSApp.runModal 做模态,回车=确定、Esc=取消。
+private final class TextPrompt: NSObject {
+    private let window: NSWindow
+    private let field: NSTextField
+    private var response: NSApplication.ModalResponse = .cancel
+
+    static func run(title: String, message: String, placeholder: String) -> String? {
+        let p = TextPrompt(title: title, message: message, placeholder: placeholder)
+        return p.present()
+    }
+
+    private init(title: String, message: String, placeholder: String) {
+        let width: CGFloat = 300
+        let pad: CGFloat = 20
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = .boldSystemFont(ofSize: 13)
+
+        let msgLabel = NSTextField(labelWithString: message)
+        msgLabel.font = .systemFont(ofSize: 12)
+        msgLabel.textColor = .secondaryLabelColor
+
+        field = NSTextField(frame: .zero)
+        field.placeholderString = placeholder
+        field.font = .systemFont(ofSize: 13)
+
+        let okBtn = NSButton(title: "确定", target: nil, action: nil)
+        okBtn.bezelStyle = .rounded
+        okBtn.keyEquivalent = "\r"
+        let cancelBtn = NSButton(title: "取消", target: nil, action: nil)
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.keyEquivalent = "\u{1b}" // Esc
+
+        let fieldHeight: CGFloat = 24
+        let btnHeight: CGFloat = 28
+        let gap: CGFloat = 10
+        let contentWidth = width - pad * 2
+        let totalHeight = pad + 18 + 4 + 16 + gap + fieldHeight + gap + btnHeight + pad
+
+        window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: width, height: totalHeight),
+            styleMask: [.titled],
+            backing: .buffered, defer: false
+        )
+        window.title = ""
+        window.isReleasedWhenClosed = false
+
+        super.init()
+
+        let content = window.contentView!
+        for v in [titleLabel, msgLabel, field, okBtn, cancelBtn] { content.addSubview(v) }
+
+        var y = totalHeight - pad - 18
+        titleLabel.frame = NSRect(x: pad, y: y, width: contentWidth, height: 18)
+        y -= (4 + 16)
+        msgLabel.frame = NSRect(x: pad, y: y, width: contentWidth, height: 16)
+        y -= (gap + fieldHeight)
+        field.frame = NSRect(x: pad, y: y, width: contentWidth, height: fieldHeight)
+        y -= (gap + btnHeight)
+        let btnWidth: CGFloat = 72
+        okBtn.frame = NSRect(x: width - pad - btnWidth, y: y, width: btnWidth, height: btnHeight)
+        cancelBtn.frame = NSRect(x: width - pad - btnWidth * 2 - 8, y: y, width: btnWidth, height: btnHeight)
+
+        okBtn.target = self
+        okBtn.action = #selector(confirm)
+        cancelBtn.target = self
+        cancelBtn.action = #selector(cancel)
+        window.initialFirstResponder = field
+    }
+
+    private func present() -> String? {
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        response = NSApp.runModal(for: window)
+        window.orderOut(nil)
+        guard response == .OK else { return nil }
+        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @objc private func confirm() {
+        response = .OK
+        NSApp.stopModal(withCode: .OK)
+    }
+
+    @objc private func cancel() {
+        response = .cancel
+        NSApp.stopModal(withCode: .cancel)
     }
 }

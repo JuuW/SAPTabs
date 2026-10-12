@@ -64,7 +64,7 @@ final class TCodeStore: ObservableObject {
     /// 该级已存在同名 code(不区分大小写)返回 false;否则加入、排序、落盘返回 true。
     @discardableResult
     func addCode(_ raw: String, at path: [String]) -> Bool {
-        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard !code.isEmpty else { return false }
         return mutate(at: path) { children in
             if children.contains(where: {

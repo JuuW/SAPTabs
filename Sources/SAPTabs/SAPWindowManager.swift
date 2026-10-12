@@ -304,20 +304,6 @@ final class SAPWindowManager: ObservableObject {
         }
     }
 
-    /// 读取当前前台 SAP 会话正在运行的事务码,读不到返回 nil
-    func frontmostTCode() -> String? {
-        guard accessibilityGranted else { return nil }
-        let apps = NSWorkspace.shared.runningApplications.filter {
-            $0.localizedName == processName || $0.bundleURL?.lastPathComponent.contains(processName) == true
-        }
-        guard let app = apps.first(where: { $0.isActive }) ?? apps.first else { return nil }
-        let appEl = AXUIElementCreateApplication(app.processIdentifier)
-        var fref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &fref) == .success,
-              let fw = fref else { return nil }
-        return readTransactionCode(fw as! AXUIElement)
-    }
-
     /// 在会话窗口里定位 OK Code 命令输入框(system toolbar 下的 command field)
     private func commandField(in window: AXUIElement) -> AXUIElement? {
         var topRef: CFTypeRef?
