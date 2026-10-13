@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "SAPTabs",
+    name: "SAPGUITabs",
     platforms: [.macOS(.v13)],
     targets: [
         .executableTarget(
-            name: "SAPTabs",
-            path: "Sources/SAPTabs"
+            name: "SAPGUITabs",
+            path: "Sources/SAPGUITabs"
         )
     ]
 )

@@ -47,7 +47,7 @@ enum TCodeNode: Codable, Equatable {
     }
 }
 
-/// 收藏的事务码树,持久化到 ~/.saptabs_tcodes.json。
+/// 收藏的事务码树,持久化到 ~/.sapguitabs_tcodes.json。
 /// 每一级:文件夹优先、再按名称字母序(不区分大小写)。供页签栏左侧多级下拉菜单使用。
 ///
 /// 兼容旧格式:早期是扁平的 ["SE24","SPRO"] 字符串数组,load 时若识别到旧格式则升级为叶子节点。
@@ -55,7 +55,7 @@ final class TCodeStore: ObservableObject {
     @Published private(set) var root: [TCodeNode] = []
 
     private let fileURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".saptabs_tcodes.json")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".sapguitabs_tcodes.json")
     }()
 
     init() { load() }

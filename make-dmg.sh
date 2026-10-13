@@ -1,21 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 
-# 构建 SAP Tabs.app 并打包成可分发的 DMG。
-# 产物 SAPTabs.dmg 可直接发给同事:双击挂载 → 把 App 拖进 Applications。
+# 构建 SAP GUI Tabs.app 并打包成可分发的 DMG。
+# 产物 SAPGUITabs.dmg 可直接发给同事:双击挂载 → 把 App 拖进 Applications。
 #
 # ⚠️ 本 App 用自签名/ad-hoc 签名,未经 Apple 公证。同事首次打开需:
 #   1. 从 DMG 把 App 拖到「应用程序」
 #   2. 右键 App → 打开(或在「系统设置 → 隐私与安全性」里点「仍要打开」)
-#   3. 在「隐私与安全性 → 辅助功能」里勾选 SAP Tabs
+#   3. 在「隐私与安全性 → 辅助功能」里勾选 SAP GUI Tabs
 # DMG 内附带「安装和使用说明.txt」会提示这些步骤并介绍功能用法。
 
 cd "$(dirname "$0")"
 
-APP_NAME="SAP Tabs"
+APP_NAME="SAP GUI Tabs"
 BUNDLE="${APP_NAME}.app"
-DMG_NAME="SAPTabs"
-VOL_NAME="SAP Tabs"
+DMG_NAME="SAPGUITabs"
+VOL_NAME="SAP GUI Tabs"
 
 # 1) 先构建最新的 .app
 echo ">>> 构建 App..."
@@ -35,7 +35,7 @@ cp -R "${BUNDLE}" "${STAGING}/"
 ln -s /Applications "${STAGING}/Applications"
 
 cat > "${STAGING}/安装和使用说明.txt" <<'TXT'
-SAP Tabs 安装和使用说明
+SAP GUI Tabs 安装和使用说明
 ========================
 
 这是什么?
@@ -67,17 +67,17 @@ SAP 窗口里挨个翻找。
 
 安装步骤
 --------
-1. 把左边的「SAP Tabs」图标拖到右边的「Applications」文件夹。
+1. 把左边的「SAP GUI Tabs」图标拖到右边的「Applications」文件夹。
 
 2. 首次打开(重要!本应用未经 Apple 公证,需手动放行):
-   - 打开「应用程序」,找到 SAP Tabs
+   - 打开「应用程序」,找到 SAP GUI Tabs
    - 右键点击它 → 选择「打开」→ 在弹窗里再点「打开」
    - 如果仍被拦截:打开「系统设置 → 隐私与安全性」,
-     往下找到关于 SAP Tabs 的提示,点「仍要打开」
+     往下找到关于 SAP GUI Tabs 的提示,点「仍要打开」
 
 3. 授予辅助功能权限(必须,否则无法读取/切换 SAP 窗口):
    - 打开「系统设置 → 隐私与安全性 → 辅助功能」
-   - 把 SAP Tabs 的开关打开(如列表里没有,点 + 手动添加)
+   - 把 SAP GUI Tabs 的开关打开(如列表里没有,点 + 手动添加)
 
 4. 打开 SAP GUI 并登录会话,屏幕顶部即会出现页签条。
 
@@ -97,7 +97,7 @@ TCode 收藏菜单(页签栏最左侧的菜单按钮):
 - Add TCode:在该级菜单手工输入事务码加入(自动转大写保存)。
 - Add Folder:在该级新建子文件夹,给事务码分组。
 - Delete:列出本级所有事务码与文件夹,点即删(删文件夹会弹确认框)。
-- 收藏数据保存在你的主目录 ~/.saptabs_tcodes.json。
+- 收藏数据保存在你的主目录 ~/.sapguitabs_tcodes.json。
 
 
 说明:本应用在本地运行,不联网、不收集任何数据。

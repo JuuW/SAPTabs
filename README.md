@@ -1,4 +1,4 @@
-# SAP Tabs
+# SAP GUI Tabs
 
 一个 macOS 菜单栏小工具:在屏幕顶部浮一条**浏览器式页签栏**,列出当前打开的所有 SAP GUI 会话窗口,点一下即可切换,再也不用在一堆长得一模一样的 SAP 窗口里挨个翻找。
 
@@ -31,25 +31,25 @@
 1. 克隆仓库并进入目录:
 
    ```bash
-   git clone <本仓库地址> SAPTabs
-   cd SAPTabs
+   git clone <本仓库地址> SAPGUITabs
+   cd SAPGUITabs
    ```
 
-2. 运行打包脚本,会编译并生成可双击运行的 `SAP Tabs.app`:
+2. 运行打包脚本,会编译并生成可双击运行的 `SAP GUI Tabs.app`:
 
    ```bash
    ./build.sh
    ```
 
-3. 把生成的 `SAP Tabs.app` 拖进「应用程序」文件夹(可选),然后双击运行:
+3. 把生成的 `SAP GUI Tabs.app` 拖进「应用程序」文件夹(可选),然后双击运行:
 
    ```bash
-   open "SAP Tabs.app"
+   open "SAP GUI Tabs.app"
    ```
 
 ### 方式二:直接拿到打好包的 .app
 
-如果别人已经用 `build.sh` 打好了 `SAP Tabs.app`,把这个 `.app` 拷到你的电脑,双击即可运行(首次运行需按下方授权辅助功能)。
+如果别人已经用 `build.sh` 打好了 `SAP GUI Tabs.app`,把这个 `.app` 拷到你的电脑,双击即可运行(首次运行需按下方授权辅助功能)。
 
 > 应用没有经过 Apple 公证,首次打开若被 Gatekeeper 拦下,在「系统设置 → 隐私与安全性」里点「仍要打开」,或右键 .app → 打开。
 
@@ -58,7 +58,7 @@
 本工具靠系统辅助功能(Accessibility)API 读取和切换 SAP 窗口,**必须授权才能工作**。
 
 1. 首次运行时,页签栏会提示「需要辅助功能权限」,点「去授权」。
-2. 在弹出的「系统设置 → 隐私与安全性 → 辅助功能」里,打开 **SAP Tabs** 的开关。
+2. 在弹出的「系统设置 → 隐私与安全性 → 辅助功能」里,打开 **SAP GUI Tabs** 的开关。
 3. 回到应用,页签栏即开始正常列出 SAP 窗口。
 
 授权是按「签名身份 + 可执行文件」记录的。本项目的 `build.sh` 用本地自签名证书签名,因此**重新构建后授权依然有效**,无需每次重授。
@@ -83,16 +83,16 @@
 - **Add Folder** —— 每一级菜单末尾的 `Add Folder`,弹框输入名称即可在该级新建子文件夹,用来给事务码分组;重名会提示。
 - **Delete** —— 每一级菜单末尾的 `Delete`,子菜单列出本级所有事务码与文件夹;点事务码即删,点文件夹会弹确认框(连同其全部内容一起删)。
 
-收藏数据保存在你的用户主目录下的 `~/.saptabs_tcodes.json`。
+收藏数据保存在你的用户主目录下的 `~/.sapguitabs_tcodes.json`。
 
 ## 卸载
 
-退出应用并删除 `.app` 即可;如需清理授权,在「系统设置 → 隐私与安全性 → 辅助功能」里移除 SAP Tabs。
+退出应用并删除 `.app` 即可;如需清理授权,在「系统设置 → 隐私与安全性 → 辅助功能」里移除 SAP GUI Tabs。
 
 ```bash
-pkill -x SAPTabs
-rm -rf "SAP Tabs.app"
-rm -f ~/.saptabs_tcodes.json   # 如需一并清掉 TCode 收藏
+pkill -x SAPGUITabs
+rm -rf "SAP GUI Tabs.app"
+rm -f ~/.sapguitabs_tcodes.json   # 如需一并清掉 TCode 收藏
 ```
 
 ## 技术栈

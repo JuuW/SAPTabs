@@ -1,6 +1,6 @@
 import AppKit
 
-// 生成 SAP Tabs 图标:蓝色梯形主体(原创几何形,顶宽底窄、底边两端内收的四边形,
+// 生成 SAP GUI Tabs 图标:蓝色梯形主体(原创几何形,顶宽底窄、底边两端内收的四边形,
 // 非任何注册商标),顶部叠一条浅色横条 + 三个小方块(页签),寓意"窗口顶部浮一条页签栏"。
 func drawIcon(size: CGFloat) -> NSImage {
     let img = NSImage(size: NSSize(width: size, height: size))
@@ -102,7 +102,7 @@ func pngData(_ image: NSImage, px: Int) -> Data {
 }
 
 // iconset 各尺寸
-let iconset = "/tmp/SAPTabs.iconset"
+let iconset = "/tmp/SAPGUITabs.iconset"
 try? FileManager.default.removeItem(atPath: iconset)
 try! FileManager.default.createDirectory(atPath: iconset, withIntermediateDirectories: true)
 

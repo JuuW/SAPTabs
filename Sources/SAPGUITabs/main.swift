@@ -94,13 +94,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "square.grid.2x2", accessibilityDescription: "SAP Tabs")
+            button.image = NSImage(systemSymbolName: "server.rack", accessibilityDescription: "SAP GUI Tabs")
         }
         let menu = NSMenu()
         menu.addItem(withTitle: "启用 / 停用自动显示", action: #selector(togglePanel), keyEquivalent: "t").target = self
         menu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "退出 SAP Tabs", action: #selector(quit), keyEquivalent: "q").target = self
+        menu.addItem(withTitle: "退出 SAP GUI Tabs", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
     }
 

@@ -1,4 +1,4 @@
-# SAP Tabs
+# SAP GUI Tabs
 
 macOS 菜单栏小工具:在屏幕顶部浮一条页签,列出所有打开的 SAP GUI 会话窗口,点击即可切换。Swift + SwiftUI + AppKit,靠 Accessibility API(AXUIElement)读写窗口。
 
@@ -7,9 +7,9 @@ macOS 菜单栏小工具:在屏幕顶部浮一条页签,列出所有打开的 SA
 ## 构建与运行
 
 - **改完代码必须用 `./build.sh` 打包成 `.app` 再运行**,不能只 `swift build`。原因见下方「权限」。
-- 典型重启流程:`pkill -x SAPTabs; ./build.sh; open "SAP Tabs.app"`。
-- `build.sh` 用本地自签名证书 `SAPTabs-SelfSign` 签名,目的是让 TCC(辅助功能)授权在重建后**永久保持**。若该证书不存在会回退 ad-hoc 签名,届时每次重建都要重新授权。
-- 产物 `SAP Tabs.app/`、`.build/` 已在 .gitignore,提交时只会有 `Sources/`。
+- 典型重启流程:`pkill -x SAPGUITabs; ./build.sh; open "SAP GUI Tabs.app"`。
+- `build.sh` 用本地自签名证书 `SAPGUITabs-SelfSign` 签名,目的是让 TCC(辅助功能)授权在重建后**永久保持**。若该证书不存在会回退 ad-hoc 签名,届时每次重建都要重新授权。
+- 产物 `SAP GUI Tabs.app/`、`.build/` 已在 .gitignore,提交时只会有 `Sources/`。
 
 ## 权限(Accessibility / TCC)
 
