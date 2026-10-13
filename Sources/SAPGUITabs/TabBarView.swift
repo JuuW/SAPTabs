@@ -51,15 +51,11 @@ struct TabBarView: View {
         return TabChip(
             title: displayLabel(win),
             isActive: win.id == manager.frontWindowID,
-            leadingSystemID: isGroupHead ? manager.systemID(win.title) : nil
+            leadingSystemID: isGroupHead ? manager.systemID(win.title) : nil,
+            onClose: { manager.close(win) }
         )
         .onTapGesture { manager.focus(win) }
-        .contextMenu {
-            Button(role: .destructive) { manager.close(win) } label: {
-                Label("关闭", systemImage: "xmark")
-            }
-        }
-        .help("\(win.title)\n单击切换 · 右键关闭")
+        .help("\(win.title)\n单击切换")
     }
 
     // 当前页签与上一个页签系统 ID 不同时,即为系统组边界
@@ -159,6 +155,8 @@ struct TabChip: View {
                     .foregroundStyle(Color.primary)
             }
             .lineLimit(1)
+            // 为右上角关闭叉叉预留宽度,且所有页签恒定预留,焦点切换时宽度不跳动
+            Spacer().frame(width: 12)
         }
         .padding(.horizontal, 6)
         .frame(maxHeight: .infinity)
@@ -170,6 +168,21 @@ struct TabChip: View {
             )
             .fill(isActive ? Color.white : (hovering ? Color.white.opacity(0.4) : Color.clear))
         )
+        .overlay(alignment: .topTrailing) {
+            if isActive {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 14, height: 14)
+                        .background(Circle().fill(Color.secondary.opacity(0.75)))
+                }
+                .buttonStyle(.plain)
+                .help("关闭此窗口")
+                .padding(.top, 2)
+                .padding(.trailing, 2)
+            }
+        }
     }
 }
 
