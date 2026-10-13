@@ -327,18 +327,6 @@ struct TCodeMenuView: View {
     }
 }
 
-/// 删除菜单项携带的上下文:在哪一级路径、删的是哪个名字、是不是文件夹
-private final class DeleteContext {
-    let path: [String]
-    let name: String
-    let isFolder: Bool
-    init(path: [String], name: String, isFolder: Bool) {
-        self.path = path
-        self.name = name
-        self.isFolder = isFolder
-    }
-}
-
 /// 承载 NSMenu 的三角按钮
 private struct NativeTCodeButton: NSViewRepresentable {
     let manager: SAPWindowManager
@@ -372,6 +360,29 @@ private struct NativeTCodeButton: NSViewRepresentable {
         var manager: SAPWindowManager
         var store: TCodeStore
 
+        /// 事务码菜单项前的闪电图标(普通文本节点不带),用于一眼区分两类叶子
+        static let boltImage: NSImage? = {
+            let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            let img = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "TCode")?
+                .withSymbolConfiguration(cfg)
+            img?.isTemplate = false
+            return img
+        }()
+
+        /// 与闪电图标等尺寸的透明占位图:普通文本项用它占住图标位,使文本与事务码左对齐。
+        /// 必须用 drawingHandler 画出真正的(透明)表示——空的 NSImage(size:) 没有
+        /// representation,AppKit 对它的占位宽度不可靠(子菜单里尤其会不占位)。
+        static let placeholderImage: NSImage? = {
+            let size = boltImage?.size ?? NSSize(width: 12, height: 12)
+            let img = NSImage(size: size, flipped: false) { _ in true } // 画个全透明
+            img.isTemplate = false
+            return img
+        }()
+
+        // 根菜单与其顶部搜索框:applySearch 直接增删根菜单下方的项来展示过滤结果
+        private weak var rootMenu: NSMenu?
+        private weak var searchField: SearchFieldView?
+
         init(manager: SAPWindowManager, store: TCodeStore) {
             self.manager = manager
             self.store = store
@@ -380,6 +391,8 @@ private struct NativeTCodeButton: NSViewRepresentable {
         /// 菜单打开后,给它的宿主窗口垫一层不透明底色,盖住 vibrancy 透出的后方内容
         func menuDidClose(_ menu: NSMenu) {}
         func menuWillOpen(_ menu: NSMenu) {
+            // 根菜单打开时,让顶部搜索框拿到键盘焦点,可直接输入过滤
+            if menu === rootMenu { searchField?.focus() }
             // 菜单窗口此刻可能还没就位,下一轮 runloop 再处理
             DispatchQueue.main.async {
                 for win in NSApp.windows where String(describing: type(of: win)).contains("NSMenuWindow")
@@ -400,36 +413,76 @@ private struct NativeTCodeButton: NSViewRepresentable {
         }
 
         @objc func popMenu(_ sender: NSButton) {
-            let menu = buildMenu(for: store.root, path: [])
+            let menu = buildMenu(for: store.root, path: [], isRoot: true)
             let origin = NSPoint(x: 0, y: sender.bounds.height + 4)
             menu.popUp(positioning: nil, at: origin, in: sender)
         }
 
         /// 递归构建某一级菜单:先列该级节点(文件夹→子菜单,TCode→可点击叶子),
-        /// 末尾加分隔线 + Add TCode + Add Folder(都作用于本级 path)。
-        private func buildMenu(for nodes: [TCodeNode], path: [String]) -> NSMenu {
+        /// 末尾加分隔线 + Add Node + Add Folder(都作用于本级 path)。
+        /// isRoot:仅根菜单在最顶部插入搜索框,输入时把下方替换为跨层级的扁平匹配结果。
+        private func buildMenu(for nodes: [TCodeNode], path: [String], isRoot: Bool = false) -> NSMenu {
             let menu = NSMenu()
             menu.appearance = NSAppearance(named: .aqua)   // 避免 vibrancy 半透明
             menu.delegate = self
 
+            if isRoot {
+                rootMenu = menu
+                let searchItem = NSMenuItem()
+                let box = SearchFieldView(frame: NSRect(x: 0, y: 0, width: 220, height: 28))
+                box.onChange = { [weak self] q in self?.applySearch(q) }
+                searchItem.view = box
+                searchField = box
+                menu.addItem(searchItem)
+                menu.addItem(.separator())
+            }
+
+            appendNodeItems(nodes, path: path, to: menu)
+
+            // 根菜单末尾:打开整理窗口(增删节点/文件夹、拖拽移动)
+            if isRoot {
+                menu.addItem(.separator())
+                let manage = NSMenuItem(title: "整理收藏…", action: #selector(openManageWindow), keyEquivalent: "")
+                manage.target = self
+                menu.addItem(manage)
+            }
+            return menu
+        }
+
+        /// 打开整理窗口:增删节点/文件夹、拖拽把节点移到别的文件夹
+        @objc private func openManageWindow() {
+            ManageWindowController.shared.show(store: store)
+        }
+
+        /// 把某一级节点渲染成菜单项追加到 menu(文件夹→子菜单,code→带闪电叶子,text→普通叶子)
+        private func appendNodeItems(_ nodes: [TCodeNode], path: [String], to menu: NSMenu) {
             for node in nodes {
                 switch node {
                 case .code(let code):
-                    // 常态项:直接显示事务码
+                    // 事务码项:标题前带闪电图标,点击填入 OK Code 执行
                     let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
                     item.target = self
                     item.representedObject = code
+                    item.image = Self.boltImage
                     menu.addItem(item)
                     // Alt 替身项:按住 Option 时顶替上面那项显示,标题前加小写 /n 作提示
                     let alt = NSMenuItem(title: "/n" + code, action: #selector(runTCode(_:)), keyEquivalent: "")
                     alt.target = self
                     alt.representedObject = code
+                    alt.image = Self.boltImage
                     alt.keyEquivalentModifierMask = .option
                     alt.isAlternate = true
                     menu.addItem(alt)
+                case .text(let text):
+                    // 普通文本项:用透明占位图占住图标位,使其与事务码左对齐
+                    let item = NSMenuItem(title: text, action: #selector(copyText(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = text
+                    item.image = Self.placeholderImage
+                    menu.addItem(item)
                 case .folder(let name, let children):
                     let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
-                    // 文件夹用加粗字体区分普通 TCode 项
+                    // 文件夹用加粗字体区分普通叶子项
                     item.attributedTitle = NSAttributedString(string: name, attributes: [
                         .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
                     ])
@@ -437,45 +490,70 @@ private struct NativeTCodeButton: NSViewRepresentable {
                     menu.addItem(item)
                 }
             }
+        }
 
-            menu.addItem(.separator())
-            let addCode = NSMenuItem(title: "Add TCode", action: #selector(addCurrentTCode(_:)), keyEquivalent: "")
-            addCode.target = self
-            addCode.representedObject = path
-            menu.addItem(addCode)
-            let addFolder = NSMenuItem(title: "Add Folder", action: #selector(addFolder(_:)), keyEquivalent: "")
-            addFolder.target = self
-            addFolder.representedObject = path
-            menu.addItem(addFolder)
+        /// 搜索框内容变化时:空查询→恢复根级常规树;否则把搜索框下方替换为跨层级扁平匹配结果。
+        /// 匹配不区分大小写;只按叶子自身内容匹配,文件夹名不参与、也不在结果里显示路径。
+        private func applySearch(_ query: String) {
+            guard let menu = rootMenu else { return }
+            let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // 删除入口:显示为 Delete,子菜单列出本级每一项,点击即删
-            if !nodes.isEmpty {
-                let del = NSMenuItem(title: "Delete", action: nil, keyEquivalent: "")
-                let sub = NSMenu()
-                sub.appearance = NSAppearance(named: .aqua)
-                sub.delegate = self
-                for node in nodes {
-                    switch node {
-                    case .code(let code):
-                        let it = NSMenuItem(title: code, action: #selector(deleteNode(_:)), keyEquivalent: "")
-                        it.target = self
-                        it.representedObject = DeleteContext(path: path, name: code, isFolder: false)
-                        sub.addItem(it)
-                    case .folder(let name, _):
-                        let it = NSMenuItem(title: name, action: #selector(deleteNode(_:)), keyEquivalent: "")
-                        it.attributedTitle = NSAttributedString(
-                            string: name,
-                            attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)]
-                        )
-                        it.target = self
-                        it.representedObject = DeleteContext(path: path, name: name, isFolder: true)
-                        sub.addItem(it)
-                    }
-                }
-                del.submenu = sub
-                menu.addItem(del)
+            // 保留顶部的搜索框项(index 0)与其后的分隔线(index 1),清掉之后所有项再重建
+            while menu.items.count > 2 { menu.removeItem(at: menu.items.count - 1) }
+
+            if q.isEmpty {
+                appendNodeItems(store.root, path: [], to: menu)
+                menu.addItem(.separator())
+                let manage = NSMenuItem(title: "整理收藏…", action: #selector(openManageWindow), keyEquivalent: "")
+                manage.target = self
+                menu.addItem(manage)
+                return
             }
-            return menu
+
+            var matches: [(node: TCodeNode, path: [String])] = []
+            collectMatches(store.root, path: [], query: q, into: &matches)
+
+            if matches.isEmpty {
+                let none = NSMenuItem(title: "无匹配项", action: nil, keyEquivalent: "")
+                none.isEnabled = false
+                menu.addItem(none)
+                return
+            }
+
+            for m in matches {
+                switch m.node {
+                case .code(let code):
+                    let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = code
+                    item.image = Self.boltImage
+                    menu.addItem(item)
+                case .text(let text):
+                    let item = NSMenuItem(title: text, action: #selector(copyText(_:)), keyEquivalent: "")
+                    item.target = self
+                    item.representedObject = text
+                    item.image = Self.placeholderImage
+                    menu.addItem(item)
+                case .folder:
+                    break   // 搜索结果只列可点击的叶子
+                }
+            }
+        }
+
+        /// 递归收集匹配 query 的叶子节点(code / text),记录其所在文件夹路径。
+        /// 只按叶子自身内容匹配,文件夹名不参与匹配——仅作为下钻路径继续往里找。
+        private func collectMatches(_ nodes: [TCodeNode], path: [String], query: String,
+                                    into out: inout [(node: TCodeNode, path: [String])]) {
+            for node in nodes {
+                switch node {
+                case .code(let c):
+                    if c.localizedCaseInsensitiveContains(query) { out.append((node, path)) }
+                case .text(let t):
+                    if t.localizedCaseInsensitiveContains(query) { out.append((node, path)) }
+                case .folder(let name, let children):
+                    collectMatches(children, path: path + [name], query: query, into: &out)
+                }
+            }
         }
 
         /// 点选事务码:默认加 /o(另开新窗口),按住 Option(Alt)则 /n(当前窗口切新事务)
@@ -485,57 +563,82 @@ private struct NativeTCodeButton: NSViewRepresentable {
             manager.writeCommand((opt ? "/n" : "/o") + code, execute: true)
         }
 
-        /// 弹框手工输入事务码,加入到该级;空输入忽略,已存在则提示
-        @objc private func addCurrentTCode(_ sender: NSMenuItem) {
-            let path = sender.representedObject as? [String] ?? []
-            guard let code = promptForText(title: "添加事务码",
-                                           message: "请输入事务码:",
-                                           placeholder: "事务码"),
-                  !code.isEmpty else { return }
-            if !store.addCode(code, at: path) {
-                alert("已存在", "事务码 \"\(code)\" 已在该文件夹中。")
-            }
+        /// 点选普通文本:只复制到系统剪贴板,不填入 OK Code
+        @objc private func copyText(_ sender: NSMenuItem) {
+            guard let text = sender.representedObject as? String else { return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
         }
+    }
+}
 
-        /// 在该级新建文件夹:弹框输入名字,重名则提示
-        @objc private func addFolder(_ sender: NSMenuItem) {
-            let path = sender.representedObject as? [String] ?? []
-            guard let name = promptForText(title: "新建文件夹",
-                                           message: "请输入文件夹名称:",
-                                           placeholder: "文件夹名"),
-                  !name.isEmpty else { return }
-            if !store.addFolder(name, at: path) {
-                alert("已存在", "文件夹 \"\(name)\" 已在该层级中。")
-            }
-        }
+/// LSUIElement(菜单栏小工具)没有常规菜单栏,Cmd+C/V/X/A/Z 这些标准编辑快捷键
+/// 无处路由,导致输入框里无法粘贴。让输入框自己把这些快捷键转成对应的 responder action。
+/// 返回 true 表示已处理。
+private func handleEditKeyEquivalent(_ event: NSEvent, on field: NSControl) -> Bool {
+    guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+          let chars = event.charactersIgnoringModifiers else { return false }
+    let selector: Selector?
+    switch chars {
+    case "x": selector = #selector(NSText.cut(_:))
+    case "c": selector = #selector(NSText.copy(_:))
+    case "v": selector = #selector(NSText.paste(_:))
+    case "a": selector = #selector(NSResponder.selectAll(_:))
+    case "z": selector = Selector(("undo:"))
+    default:  selector = nil
+    }
+    guard let sel = selector else { return false }
+    return NSApp.sendAction(sel, to: field.currentEditor(), from: field)
+}
 
-        /// 删除某项:文件夹删除前确认(会连同子内容一起删),TCode 直接删
-        @objc private func deleteNode(_ sender: NSMenuItem) {
-            guard let ctx = sender.representedObject as? DeleteContext else { return }
-            if ctx.isFolder {
-                let a = NSAlert()
-                a.messageText = "删除文件夹"
-                a.informativeText = "确定删除文件夹 \"\(ctx.name)\" 及其全部内容?"
-                a.addButton(withTitle: "删除")
-                a.addButton(withTitle: "取消")
-                guard a.runModal() == .alertFirstButtonReturn else { return }
-                store.removeFolder(ctx.name, at: ctx.path)
-            } else {
-                store.removeCode(ctx.name, at: ctx.path)
-            }
-        }
+/// 支持 Cmd 编辑快捷键的搜索框(见 handleEditKeyEquivalent)
+final class EditableSearchField: NSSearchField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        handleEditKeyEquivalent(event, on: self) || super.performKeyEquivalent(with: event)
+    }
+}
 
-        /// 弹出紧凑的输入小窗口(无图标、无多余留白),返回用户输入(去空白;取消返回 nil)
-        private func promptForText(title: String, message: String, placeholder: String) -> String? {
-            return TextPrompt.run(title: title, message: message, placeholder: placeholder)
-        }
+/// 支持 Cmd 编辑快捷键的文本框(见 handleEditKeyEquivalent)
+final class EditableTextField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        handleEditKeyEquivalent(event, on: self) || super.performKeyEquivalent(with: event)
+    }
+}
 
-        private func alert(_ title: String, _ msg: String) {
-            let a = NSAlert()
-            a.messageText = title
-            a.informativeText = msg
-            a.addButton(withTitle: "好")
-            a.runModal()
+/// 承载在菜单顶部的搜索框:一个 NSSearchField,内容变化时回调 onChange。
+/// 作为 NSMenuItem.view 放入菜单,点击/输入时菜单不会关闭。
+final class SearchFieldView: NSView, NSSearchFieldDelegate {
+    let field = EditableSearchField()
+    var onChange: ((String) -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        field.placeholderString = "搜索…"
+        field.font = .systemFont(ofSize: 12)
+        field.focusRingType = .none
+        field.sendsSearchStringImmediately = true
+        field.sendsWholeSearchString = false
+        field.delegate = self
+        field.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(field)
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            field.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func controlTextDidChange(_ obj: Notification) {
+        onChange?(field.stringValue)
+    }
+
+    /// 让搜索框在菜单弹出后尽快拿到键盘焦点
+    func focus() {
+        DispatchQueue.main.async { [weak self] in
+            self?.window?.makeFirstResponder(self?.field)
         }
     }
 }
@@ -584,19 +687,25 @@ struct OverflowMenuView: View {
     }
 }
 
-/// 紧凑的单行输入弹窗:只有标题、输入框、确定/取消两个按钮,无图标、无多余留白。
+/// 紧凑的单行输入弹窗:标题、输入框、可选勾选框、确定/取消两个按钮,无图标、无多余留白。
 /// 用 NSApp.runModal 做模态,回车=确定、Esc=取消。
-private final class TextPrompt: NSObject {
+/// 返回 (输入文本, 勾选框是否勾上);取消返回 nil。无勾选框时 checked 恒为 false。
+final class TextPrompt: NSObject {
     private let window: NSWindow
     private let field: NSTextField
+    private let checkbox: NSButton?
     private var response: NSApplication.ModalResponse = .cancel
 
-    static func run(title: String, message: String, placeholder: String) -> String? {
-        let p = TextPrompt(title: title, message: message, placeholder: placeholder)
+    /// checkboxTitle 为 nil 时不显示勾选框;checkboxOn 为勾选框初始状态
+    static func run(title: String, message: String, placeholder: String,
+                    checkboxTitle: String? = nil, checkboxOn: Bool = false) -> (text: String, checked: Bool)? {
+        let p = TextPrompt(title: title, message: message, placeholder: placeholder,
+                           checkboxTitle: checkboxTitle, checkboxOn: checkboxOn)
         return p.present()
     }
 
-    private init(title: String, message: String, placeholder: String) {
+    private init(title: String, message: String, placeholder: String,
+                 checkboxTitle: String?, checkboxOn: Bool) {
         let width: CGFloat = 300
         let pad: CGFloat = 20
 
@@ -607,9 +716,18 @@ private final class TextPrompt: NSObject {
         msgLabel.font = .systemFont(ofSize: 12)
         msgLabel.textColor = .secondaryLabelColor
 
-        field = NSTextField(frame: .zero)
+        field = EditableTextField(frame: .zero)
         field.placeholderString = placeholder
         field.font = .systemFont(ofSize: 13)
+
+        if let cbTitle = checkboxTitle {
+            let cb = NSButton(checkboxWithTitle: cbTitle, target: nil, action: nil)
+            cb.state = checkboxOn ? .on : .off
+            cb.font = .systemFont(ofSize: 12)
+            checkbox = cb
+        } else {
+            checkbox = nil
+        }
 
         let okBtn = NSButton(title: "确定", target: nil, action: nil)
         okBtn.bezelStyle = .rounded
@@ -620,9 +738,12 @@ private final class TextPrompt: NSObject {
 
         let fieldHeight: CGFloat = 24
         let btnHeight: CGFloat = 28
+        let checkHeight: CGFloat = checkbox == nil ? 0 : 20
+        let checkGap: CGFloat = checkbox == nil ? 0 : 10
         let gap: CGFloat = 10
         let contentWidth = width - pad * 2
-        let totalHeight = pad + 18 + 4 + 16 + gap + fieldHeight + gap + btnHeight + pad
+        let totalHeight = pad + 18 + 4 + 16 + gap + fieldHeight
+            + checkGap + checkHeight + gap + btnHeight + pad
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: totalHeight),
@@ -635,7 +756,9 @@ private final class TextPrompt: NSObject {
         super.init()
 
         let content = window.contentView!
-        for v in [titleLabel, msgLabel, field, okBtn, cancelBtn] { content.addSubview(v) }
+        var views: [NSView] = [titleLabel, msgLabel, field, okBtn, cancelBtn]
+        if let cb = checkbox { views.append(cb) }
+        for v in views { content.addSubview(v) }
 
         var y = totalHeight - pad - 18
         titleLabel.frame = NSRect(x: pad, y: y, width: contentWidth, height: 18)
@@ -643,6 +766,10 @@ private final class TextPrompt: NSObject {
         msgLabel.frame = NSRect(x: pad, y: y, width: contentWidth, height: 16)
         y -= (gap + fieldHeight)
         field.frame = NSRect(x: pad, y: y, width: contentWidth, height: fieldHeight)
+        if let cb = checkbox {
+            y -= (checkGap + checkHeight)
+            cb.frame = NSRect(x: pad, y: y, width: contentWidth, height: checkHeight)
+        }
         y -= (gap + btnHeight)
         let btnWidth: CGFloat = 72
         okBtn.frame = NSRect(x: width - pad - btnWidth, y: y, width: btnWidth, height: btnHeight)
@@ -655,13 +782,14 @@ private final class TextPrompt: NSObject {
         window.initialFirstResponder = field
     }
 
-    private func present() -> String? {
+    private func present() -> (text: String, checked: Bool)? {
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         response = NSApp.runModal(for: window)
         window.orderOut(nil)
         guard response == .OK else { return nil }
-        return field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (text, checkbox?.state == .on)
     }
 
     @objc private func confirm() {

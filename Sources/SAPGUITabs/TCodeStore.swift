@@ -1,14 +1,18 @@
 import Foundation
 
-/// 收藏树的节点:要么是一个事务码(叶子),要么是一个文件夹(含子节点)。
+/// 收藏树的节点:事务码(叶子)、普通文本(叶子)、或文件夹(含子节点)。
+/// - code:事务码,点击填入 OK Code 并执行,显示时前面带闪电图标。
+/// - text:普通文本,点击只复制到剪贴板,不进 OK Code。
 enum TCodeNode: Codable, Equatable {
     case code(String)
+    case text(String)
     case folder(name: String, children: [TCodeNode])
 
-    /// 排序用的显示名(folder 用名字,code 用码本身)
+    /// 排序用的显示名(folder 用名字,叶子用其值)
     var sortName: String {
         switch self {
         case .code(let c): return c
+        case .text(let t): return t
         case .folder(let n, _): return n
         }
     }
@@ -17,8 +21,19 @@ enum TCodeNode: Codable, Equatable {
         return false
     }
 
-    // 自定义编解码:{"type":"code","value":"SE24"} 或
-    // {"type":"folder","name":"Dev","children":[...]}
+    /// 同级排序的类别优先级:文件夹(0) < 事务码(1) < 普通文本(2),同类再按字母序
+    var sortRank: Int {
+        switch self {
+        case .folder: return 0
+        case .code:   return 1
+        case .text:   return 2
+        }
+    }
+
+    // 自定义编解码:
+    //   {"type":"code","value":"SE24"}
+    //   {"type":"text","value":"随便记点东西"}
+    //   {"type":"folder","name":"Dev","children":[...]}
     private enum CodingKeys: String, CodingKey { case type, value, name, children }
 
     init(from decoder: Decoder) throws {
@@ -28,6 +43,8 @@ enum TCodeNode: Codable, Equatable {
             let name = try c.decode(String.self, forKey: .name)
             let children = try c.decodeIfPresent([TCodeNode].self, forKey: .children) ?? []
             self = .folder(name: name, children: children)
+        case "text":
+            self = .text(try c.decode(String.self, forKey: .value))
         default:
             self = .code(try c.decode(String.self, forKey: .value))
         }
@@ -38,6 +55,9 @@ enum TCodeNode: Codable, Equatable {
         switch self {
         case .code(let v):
             try c.encode("code", forKey: .type)
+            try c.encode(v, forKey: .value)
+        case .text(let v):
+            try c.encode("text", forKey: .type)
             try c.encode(v, forKey: .value)
         case .folder(let name, let children):
             try c.encode("folder", forKey: .type)
@@ -60,6 +80,14 @@ final class TCodeStore: ObservableObject {
 
     init() { load() }
 
+    /// 用一棵新树整体替换收藏(管理窗口拖拽重排后写回)。会递归排序并落盘。
+    func replaceRoot(_ newRoot: [TCodeNode]) {
+        var t = newRoot
+        sortTree(&t)
+        root = t
+        save()
+    }
+
     /// 在指定文件夹路径下添加事务码。路径为空表示根级。
     /// 该级已存在同名 code(不区分大小写)返回 false;否则加入、排序、落盘返回 true。
     @discardableResult
@@ -72,6 +100,22 @@ final class TCodeStore: ObservableObject {
                 return false
             }) { return false }
             children.append(.code(code))
+            return true
+        }
+    }
+
+    /// 在指定文件夹路径下添加普通文本节点(点击只复制到剪贴板)。
+    /// 统一转为大写、与事务码保持一致。该级已存在完全相同文本返回 false。
+    @discardableResult
+    func addText(_ raw: String, at path: [String]) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !text.isEmpty else { return false }
+        return mutate(at: path) { children in
+            if children.contains(where: {
+                if case .text(let t) = $0 { return t == text }
+                return false
+            }) { return false }
+            children.append(.text(text))
             return true
         }
     }
@@ -100,6 +144,19 @@ final class TCodeStore: ObservableObject {
             let before = children.count
             children.removeAll {
                 if case .code(let c) = $0 { return c.caseInsensitiveCompare(code) == .orderedSame }
+                return false
+            }
+            return children.count != before
+        }
+    }
+
+    /// 删除 path 层级下的某个普通文本节点(按完全相同文本匹配)
+    @discardableResult
+    func removeText(_ text: String, at path: [String]) -> Bool {
+        mutate(at: path) { children in
+            let before = children.count
+            children.removeAll {
+                if case .text(let t) = $0 { return t == text }
                 return false
             }
             return children.count != before
@@ -162,10 +219,10 @@ final class TCodeStore: ObservableObject {
         }
     }
 
-    /// 文件夹优先,再按名称字母序(不区分大小写)
+    /// 文件夹在前、其次事务码、最后普通文本;同类再按名称字母序(不区分大小写)
     private static func sort(_ nodes: inout [TCodeNode]) {
         nodes.sort { a, b in
-            if a.isFolder != b.isFolder { return a.isFolder }
+            if a.sortRank != b.sortRank { return a.sortRank < b.sortRank }
             return a.sortName.localizedCaseInsensitiveCompare(b.sortName) == .orderedAscending
         }
     }
