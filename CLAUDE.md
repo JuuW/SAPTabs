@@ -53,6 +53,19 @@ macOS 菜单栏小工具:在屏幕顶部浮一条页签,列出所有打开的 SA
 - 位置固定:主屏可见区宽度 90%、水平居中、紧贴顶部;高度 28(与 SAP 窗口标题栏那行等高)。屏幕参数变化会重新定位。
 - 面板是 `.nonactivatingPanel` + `.floating`,点击切换窗口时不抢焦点。
 
+## 字段默认值自动填充(DefaultsStore + SAPWindowManager)
+
+配置文件 `~/.sapguitabs_defaults.conf`,每行 `系统ID,Tcode,字段ID = 默认值`,不支持通配(首次运行写模板)。某窗口首次进入对应 tcode 且为前台时,把空字段填上。几个踩过/绕过的坑:
+
+- **字段ID = 字段的 `AXDescription`,不是技术字段名**。SAP GUI for Java 的 AX 树**不暴露** SAP 技术名(RSYST-MANDT 之类),只给字段标签文本。`normalizeFieldLabel` 会去掉 SAP 加的 ` - Required` 后缀,所以配置里写 `User` 能匹配 desc=`User - Required` 的字段。
+- **每个字段在 AX 里成对出现**:占位元素(val=标签文字)+ 真正输入框,两者 desc 相同。`editableFields` 返回所有同标签候选,填值时**挑第一个当前 value 为空的**——既跳过占位、又不覆盖已有值。
+- **写值只能靠键盘事件**,同命令框一样(AXSetValue 对 SAP Java 控件无效):`AXFocused=true` + CGEvent 逐字符。密码框是 `AXSecureTextField`,照样能填。
+- **只在前台窗口填**:键盘事件需要焦点,后台窗口填不进去。所以 `applyFieldDefaults` 要求 `w.id == frontID`。
+- **登录屏没有 tcode**:信息下拉读到空码。靠 `isLoginScreen`(同时有 Client+User+Password 字段)识别,把有效 tcode 当作 `S000`,这样可用 `系统,S000,User=...` 配登录屏。
+- **去重只用 `filledKeys`(窗口id|tcode),不要再引入"tcode 变化"检测**。曾用 `lastTCodeByWindow` 判"刚进入",但非前台的刷新会提前把状态更新掉、导致之后 `prev==code` 永不触发——填充彻底失效。改回纯 filledKeys 去重后才正常。无配置的 (窗口,tcode) 也记入 filledKeys,避免每秒重复扫 isLoginScreen/lookup。
+- 填值在**后台队列**异步做(聚焦等待 + 逐字符百毫秒级),`filling` 标志防重入,别改成同步否则卡死每秒刷新。
+- 菜单「重新加载默认值配置」调 `DefaultsStore.reload()`,改 conf 不必重启。
+
 ## 其它环境约束
 
 - **CommandLineTools 工具链缺少 SwiftUIMacros 插件**,`@State` 宏无法展开。所以组件内的局部状态(如悬停)用 `ObservableObject`(见 `HoverState`/`OverflowState`)代替 `@State`。新增视图状态时沿用此模式。

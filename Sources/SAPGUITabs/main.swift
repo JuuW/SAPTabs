@@ -4,6 +4,7 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let manager = SAPWindowManager()
     private let tcodeStore = TCodeStore()
+    private let defaultsStore = DefaultsStore()
     private var panel: NSPanel!
     private var statusItem: NSStatusItem!
 
@@ -15,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupPanel()
         setupStatusItem()
+        manager.defaultsStore = defaultsStore
         manager.start()
         // 首次运行若无权限,主动引导
         if !manager.accessibilityGranted {
@@ -99,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "启用 / 停用自动显示", action: #selector(togglePanel), keyEquivalent: "t").target = self
         menu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r").target = self
+        menu.addItem(withTitle: "重新加载默认值配置", action: #selector(reloadDefaults), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "退出 SAP GUI Tabs", action: #selector(quit), keyEquivalent: "q").target = self
         statusItem.menu = menu
@@ -114,6 +117,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func refreshNow() { manager.refresh() }
+
+    @objc private func reloadDefaults() { defaultsStore.reload() }
 
     @objc private func quit() {
         manager.stop()

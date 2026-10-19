@@ -383,6 +383,45 @@ private struct NativeTCodeButton: NSViewRepresentable {
         private weak var rootMenu: NSMenu?
         private weak var searchField: SearchFieldView?
 
+        /// 叶子项标题:主文本正常字号 + 备注右对齐、字号小一号、灰色。
+        /// 右对齐靠一个右对齐制表位实现(主文本与备注间插一个 \t);制表位位置 tabLocation
+        /// 由本级统一算出(见 noteTabLocation),让同级所有备注对齐到同一条右缘。
+        /// note 为空时直接返回纯文本标题。
+        private static let leafFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        private static let noteFont = NSFont.systemFont(ofSize: NSFont.systemFontSize - 1)
+
+        private static func leafTitle(_ text: String, note: String, tabLocation: CGFloat) -> NSAttributedString {
+            if note.isEmpty {
+                return NSAttributedString(string: text, attributes: [.font: leafFont])
+            }
+            let para = NSMutableParagraphStyle()
+            para.tabStops = [NSTextTab(textAlignment: .right, location: tabLocation, options: [:])]
+            para.lineBreakMode = .byClipping
+            let s = NSMutableAttributedString(
+                string: text,
+                attributes: [.font: leafFont, .paragraphStyle: para])
+            s.append(NSAttributedString(
+                string: "\t" + note,
+                attributes: [.font: noteFont,
+                             .foregroundColor: NSColor.secondaryLabelColor,
+                             .paragraphStyle: para]))
+            return s
+        }
+
+        /// 计算本级(leaves 为该级要显示的叶子的 文本/备注 对)备注右对齐的制表位位置:
+        /// 取各项 "主文本宽度 + 间距 + 备注宽度" 的最大值,保证最长那项的备注刚好贴到右缘、
+        /// 其余项的备注也对齐到同一条线。无带备注的项时返回 0(leafTitle 会退回纯文本)。
+        private static func noteTabLocation(_ leaves: [(text: String, note: String)]) -> CGFloat {
+            let gap: CGFloat = 24   // 主文本与备注之间至少留的空隙
+            var maxWidth: CGFloat = 0
+            for leaf in leaves where !leaf.note.isEmpty {
+                let tw = (leaf.text as NSString).size(withAttributes: [.font: leafFont]).width
+                let nw = (leaf.note as NSString).size(withAttributes: [.font: noteFont]).width
+                maxWidth = max(maxWidth, ceil(tw + gap + nw))
+            }
+            return maxWidth
+        }
+
         init(manager: SAPWindowManager, store: TCodeStore) {
             self.manager = manager
             self.store = store
@@ -455,30 +494,48 @@ private struct NativeTCodeButton: NSViewRepresentable {
         }
 
         /// 把某一级节点渲染成菜单项追加到 menu(文件夹→子菜单,code→带闪电叶子,text→普通叶子)
+        /// 显示用 display;representedObject 存"实际值"(clickValue 为空则回退 display),点击时用它。
         private func appendNodeItems(_ nodes: [TCodeNode], path: [String], to menu: NSMenu) {
+            // 先按本级叶子的 display 统一算备注右对齐的制表位。code 以更宽的 "/n" 替身文本计入,
+            // 保证 Alt 替身项的备注也不越过右缘。
+            var leaves: [(text: String, note: String)] = []
             for node in nodes {
                 switch node {
-                case .code(let code):
-                    // 事务码项:标题前带闪电图标,点击填入 OK Code 执行
-                    let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                case .code(let d, _, let note) where !note.isEmpty: leaves.append(("/n" + d, note))
+                case .text(let d, _, let note) where !note.isEmpty: leaves.append((d, note))
+                default: break
+                }
+            }
+            let tab = Self.noteTabLocation(leaves)
+
+            for node in nodes {
+                switch node {
+                case .code(let display, let value, let note):
+                    let eff = value.isEmpty ? display : value
+                    // 事务码项:标题前带闪电图标,显示 display,点击执行 eff;备注右对齐小字
+                    let item = NSMenuItem(title: display, action: #selector(runTCode(_:)), keyEquivalent: "")
                     item.target = self
-                    item.representedObject = code
+                    item.representedObject = eff
                     item.image = Self.boltImage
+                    item.attributedTitle = Self.leafTitle(display, note: note, tabLocation: tab)
                     menu.addItem(item)
-                    // Alt 替身项:按住 Option 时顶替上面那项显示,标题前加小写 /n 作提示
-                    let alt = NSMenuItem(title: "/n" + code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                    // Alt 替身项:按住 Option 时顶替上面那项显示,显示文本前加小写 /n 作提示
+                    let alt = NSMenuItem(title: "/n" + display, action: #selector(runTCode(_:)), keyEquivalent: "")
                     alt.target = self
-                    alt.representedObject = code
+                    alt.representedObject = eff
                     alt.image = Self.boltImage
+                    alt.attributedTitle = Self.leafTitle("/n" + display, note: note, tabLocation: tab)
                     alt.keyEquivalentModifierMask = .option
                     alt.isAlternate = true
                     menu.addItem(alt)
-                case .text(let text):
-                    // 普通文本项:用透明占位图占住图标位,使其与事务码左对齐
-                    let item = NSMenuItem(title: text, action: #selector(copyText(_:)), keyEquivalent: "")
+                case .text(let display, let value, let note):
+                    let eff = value.isEmpty ? display : value
+                    // 普通文本项:用透明占位图占住图标位,使其与事务码左对齐;备注右对齐小字
+                    let item = NSMenuItem(title: display, action: #selector(copyText(_:)), keyEquivalent: "")
                     item.target = self
-                    item.representedObject = text
+                    item.representedObject = eff
                     item.image = Self.placeholderImage
+                    item.attributedTitle = Self.leafTitle(display, note: note, tabLocation: tab)
                     menu.addItem(item)
                 case .folder(let name, let children):
                     let item = NSMenuItem(title: name, action: nil, keyEquivalent: "")
@@ -520,19 +577,32 @@ private struct NativeTCodeButton: NSViewRepresentable {
                 return
             }
 
+            // 搜索结果为跨层级扁平列表,统一按这批匹配项的 display 算一个右对齐制表位
+            var leaves: [(text: String, note: String)] = []
             for m in matches {
                 switch m.node {
-                case .code(let code):
-                    let item = NSMenuItem(title: code, action: #selector(runTCode(_:)), keyEquivalent: "")
+                case .code(let d, _, let note) where !note.isEmpty: leaves.append((d, note))
+                case .text(let d, _, let note) where !note.isEmpty: leaves.append((d, note))
+                default: break
+                }
+            }
+            let tab = Self.noteTabLocation(leaves)
+
+            for m in matches {
+                switch m.node {
+                case .code(let display, let value, let note):
+                    let item = NSMenuItem(title: display, action: #selector(runTCode(_:)), keyEquivalent: "")
                     item.target = self
-                    item.representedObject = code
+                    item.representedObject = value.isEmpty ? display : value
                     item.image = Self.boltImage
+                    item.attributedTitle = Self.leafTitle(display, note: note, tabLocation: tab)
                     menu.addItem(item)
-                case .text(let text):
-                    let item = NSMenuItem(title: text, action: #selector(copyText(_:)), keyEquivalent: "")
+                case .text(let display, let value, let note):
+                    let item = NSMenuItem(title: display, action: #selector(copyText(_:)), keyEquivalent: "")
                     item.target = self
-                    item.representedObject = text
+                    item.representedObject = value.isEmpty ? display : value
                     item.image = Self.placeholderImage
+                    item.attributedTitle = Self.leafTitle(display, note: note, tabLocation: tab)
                     menu.addItem(item)
                 case .folder:
                     break   // 搜索结果只列可点击的叶子
@@ -541,15 +611,20 @@ private struct NativeTCodeButton: NSViewRepresentable {
         }
 
         /// 递归收集匹配 query 的叶子节点(code / text),记录其所在文件夹路径。
-        /// 只按叶子自身内容匹配,文件夹名不参与匹配——仅作为下钻路径继续往里找。
+        /// 匹配叶子的 display / 实际值 / 备注;文件夹名不参与匹配——仅作为下钻路径继续往里找。
         private func collectMatches(_ nodes: [TCodeNode], path: [String], query: String,
                                     into out: inout [(node: TCodeNode, path: [String])]) {
+            func hit(_ a: String, _ b: String, _ c: String) -> Bool {
+                a.localizedCaseInsensitiveContains(query)
+                    || b.localizedCaseInsensitiveContains(query)
+                    || c.localizedCaseInsensitiveContains(query)
+            }
             for node in nodes {
                 switch node {
-                case .code(let c):
-                    if c.localizedCaseInsensitiveContains(query) { out.append((node, path)) }
-                case .text(let t):
-                    if t.localizedCaseInsensitiveContains(query) { out.append((node, path)) }
+                case .code(let d, let v, let note):
+                    if hit(d, v, note) { out.append((node, path)) }
+                case .text(let d, let v, let note):
+                    if hit(d, v, note) { out.append((node, path)) }
                 case .folder(let name, let children):
                     collectMatches(children, path: path + [name], query: query, into: &out)
                 }
@@ -687,24 +762,37 @@ struct OverflowMenuView: View {
     }
 }
 
-/// 紧凑的单行输入弹窗:标题、输入框、可选勾选框、确定/取消两个按钮,无图标、无多余留白。
+/// 紧凑的单行输入弹窗:标题、主输入框、可选"实际值"框、可选备注框、可选勾选框、确定/取消。
 /// 用 NSApp.runModal 做模态,回车=确定、Esc=取消。
-/// 返回 (输入文本, 勾选框是否勾上);取消返回 nil。无勾选框时 checked 恒为 false。
+/// 返回 (主文本 text, 实际值 value, 备注 note, 勾选框是否勾上);取消返回 nil。
+/// 未启用的框对应字段恒为空、无勾选框时 checked 恒为 false。
 final class TextPrompt: NSObject {
     private let window: NSWindow
     private let field: NSTextField
+    private let valueField: NSTextField?
+    private let noteField: NSTextField?
     private let checkbox: NSButton?
     private var response: NSApplication.ModalResponse = .cancel
 
-    /// checkboxTitle 为 nil 时不显示勾选框;checkboxOn 为勾选框初始状态
+    /// valuePlaceholder / notePlaceholder 为 nil 时不显示对应输入框。
+    /// checkboxTitle 为 nil 时不显示勾选框;checkboxOn 为勾选框初始状态。
+    /// initialText / initialValue / initialNote 为各框预填内容(编辑已有项时用)。
     static func run(title: String, message: String, placeholder: String,
-                    checkboxTitle: String? = nil, checkboxOn: Bool = false) -> (text: String, checked: Bool)? {
+                    initialText: String = "", initialValue: String = "", initialNote: String = "",
+                    valuePlaceholder: String? = nil,
+                    notePlaceholder: String? = nil,
+                    checkboxTitle: String? = nil, checkboxOn: Bool = false)
+        -> (text: String, value: String, note: String, checked: Bool)? {
         let p = TextPrompt(title: title, message: message, placeholder: placeholder,
+                           initialText: initialText, initialValue: initialValue, initialNote: initialNote,
+                           valuePlaceholder: valuePlaceholder, notePlaceholder: notePlaceholder,
                            checkboxTitle: checkboxTitle, checkboxOn: checkboxOn)
         return p.present()
     }
 
     private init(title: String, message: String, placeholder: String,
+                 initialText: String, initialValue: String, initialNote: String,
+                 valuePlaceholder: String?, notePlaceholder: String?,
                  checkboxTitle: String?, checkboxOn: Bool) {
         let width: CGFloat = 300
         let pad: CGFloat = 20
@@ -719,6 +807,18 @@ final class TextPrompt: NSObject {
         field = EditableTextField(frame: .zero)
         field.placeholderString = placeholder
         field.font = .systemFont(ofSize: 13)
+        field.stringValue = initialText
+
+        func makeField(_ ph: String?, _ initial: String) -> NSTextField? {
+            guard let ph = ph else { return nil }
+            let f = EditableTextField(frame: .zero)
+            f.placeholderString = ph
+            f.font = .systemFont(ofSize: 13)
+            f.stringValue = initial
+            return f
+        }
+        valueField = makeField(valuePlaceholder, initialValue)
+        noteField = makeField(notePlaceholder, initialNote)
 
         if let cbTitle = checkboxTitle {
             let cb = NSButton(checkboxWithTitle: cbTitle, target: nil, action: nil)
@@ -738,11 +838,15 @@ final class TextPrompt: NSObject {
 
         let fieldHeight: CGFloat = 24
         let btnHeight: CGFloat = 28
+        let rowGap: CGFloat = 8          // 主框与各附加框之间的间距
+        let extraCount = (valueField == nil ? 0 : 1) + (noteField == nil ? 0 : 1)
+        let extrasHeight = CGFloat(extraCount) * (rowGap + fieldHeight)
         let checkHeight: CGFloat = checkbox == nil ? 0 : 20
         let checkGap: CGFloat = checkbox == nil ? 0 : 10
         let gap: CGFloat = 10
         let contentWidth = width - pad * 2
         let totalHeight = pad + 18 + 4 + 16 + gap + fieldHeight
+            + extrasHeight
             + checkGap + checkHeight + gap + btnHeight + pad
 
         window = NSWindow(
@@ -757,6 +861,8 @@ final class TextPrompt: NSObject {
 
         let content = window.contentView!
         var views: [NSView] = [titleLabel, msgLabel, field, okBtn, cancelBtn]
+        if let vf = valueField { views.append(vf) }
+        if let nf = noteField { views.append(nf) }
         if let cb = checkbox { views.append(cb) }
         for v in views { content.addSubview(v) }
 
@@ -766,6 +872,13 @@ final class TextPrompt: NSObject {
         msgLabel.frame = NSRect(x: pad, y: y, width: contentWidth, height: 16)
         y -= (gap + fieldHeight)
         field.frame = NSRect(x: pad, y: y, width: contentWidth, height: fieldHeight)
+        var prev: NSTextField = field
+        for extra in [valueField, noteField].compactMap({ $0 }) {
+            y -= (rowGap + fieldHeight)
+            extra.frame = NSRect(x: pad, y: y, width: contentWidth, height: fieldHeight)
+            prev.nextKeyView = extra
+            prev = extra
+        }
         if let cb = checkbox {
             y -= (checkGap + checkHeight)
             cb.frame = NSRect(x: pad, y: y, width: contentWidth, height: checkHeight)
@@ -782,14 +895,16 @@ final class TextPrompt: NSObject {
         window.initialFirstResponder = field
     }
 
-    private func present() -> (text: String, checked: Bool)? {
+    private func present() -> (text: String, value: String, note: String, checked: Bool)? {
         window.center()
         NSApp.activate(ignoringOtherApps: true)
         response = NSApp.runModal(for: window)
         window.orderOut(nil)
         guard response == .OK else { return nil }
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (text, checkbox?.state == .on)
+        let value = valueField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let note = noteField?.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (text, value, note, checkbox?.state == .on)
     }
 
     @objc private func confirm() {

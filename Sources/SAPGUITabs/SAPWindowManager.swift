@@ -32,6 +32,13 @@ final class SAPWindowManager: ObservableObject {
 
     private var timer: Timer?
 
+    // 字段默认值配置(可空;main 注入)。某窗口首次进入某 tcode 时自动填入默认值。
+    var defaultsStore: DefaultsStore?
+    // 已填过默认值的 "窗口id|tcode",保证每窗口每 tcode 只填一次(本次运行内)
+    private var filledKeys: Set<String> = []
+    // 正在异步填值,避免同一轮重入
+    private var filling = false
+
     // 记录每个窗口 id 首次出现的序号,保证页签顺序稳定、不随 z-order 重排
     private var orderSeen: [String: Int] = [:]
     private var nextOrder: Int = 0
@@ -191,6 +198,156 @@ final class SAPWindowManager: ObservableObject {
         if frontWindowID != frontID {
             frontWindowID = frontID
         }
+
+        // 检测"窗口进入新 tcode"并按配置填默认值(只在前台窗口、异步执行)
+        applyFieldDefaults(windows: result, frontID: frontID)
+    }
+
+    // MARK: - 字段默认值自动填充
+
+    /// 在每轮刷新后调用:找出当前前台、且 tcode 刚变化(进入新 tcode)、尚未填过的窗口,
+    /// 查配置并异步把默认值填进去。
+    ///
+    /// 为什么限定前台窗口:填值要靠键盘事件(CGEvent),必须目标窗口聚焦才能收到,
+    /// 后台窗口填不进去。所以只处理当前聚焦的那个窗口。
+    /// 为什么异步:填值含聚焦等待 + 逐字符键入(百毫秒级),同步会卡住每秒刷新。
+    private func applyFieldDefaults(windows: [SAPWindow], frontID: String?) {
+        guard let store = defaultsStore, !filling else { return }
+
+        // 清理已关闭窗口的 filledKeys 记录
+        let liveIDs = Set(windows.map(\.id))
+        filledKeys = filledKeys.filter { key in
+            guard let wid = key.split(separator: "|").first else { return false }
+            return liveIDs.contains(String(wid))
+        }
+
+        for w in windows {
+            guard w.id == frontID else { continue }         // 只处理当前前台窗口(键盘事件需焦点)
+
+            // 有效 tcode:正常读 tcode;登录屏读不到码但固定是 S000,靠字段特征识别。
+            var code = w.tcode ?? ""
+            if code.isEmpty, isLoginScreen(w.axElement) { code = "S000" }
+            guard !code.isEmpty else { continue }           // 主屏/弹窗等无码场景,跳过
+
+            // 去重:同一窗口的同一 tcode 本次运行只填一次。
+            // (不依赖"tcode 变化"检测——那个在窗口未聚焦的刷新里会被提前消耗掉。)
+            let fillKey = "\(w.id)|\(code)"
+            guard !filledKeys.contains(fillKey) else { continue }
+
+            let sys = systemID(w.title)
+            let targets = store.lookup(system: sys, tcode: code)
+            guard !targets.isEmpty else {
+                // 无配置也记入,避免每秒重复扫描 isLoginScreen / lookup
+                filledKeys.insert(fillKey)
+                continue
+            }
+
+            filledKeys.insert(fillKey)
+            fillFields(in: w, targets: targets)
+            break // 一轮只处理一个窗口,避免并发填值
+        }
+    }
+
+    /// 判断窗口是否为登录屏:AXScrollArea 下同时存在 Client、User、Password 三个字段标签。
+    /// 登录屏没有 tcode,需靠字段特征识别,据此把它当作事务码 S000 处理。
+    private func isLoginScreen(_ window: AXUIElement) -> Bool {
+        var seen = Set<String>()
+        func walk(_ el: AXUIElement, depth: Int) {
+            if depth > 25 || seen.count >= 3 { return }
+            if copyStringAttribute(el, kAXRoleAttribute) == "AXTextField",
+               let desc = copyStringAttribute(el, kAXDescriptionAttribute) {
+                let norm = Self.normalizeFieldLabel(desc)
+                if ["Client", "User", "Password"].contains(norm) { seen.insert(norm) }
+            }
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &ref) == .success,
+               let kids = ref as? [AXUIElement] {
+                for k in kids { walk(k, depth: depth + 1) }
+            }
+        }
+        walk(window, depth: 0)
+        return seen.count >= 3
+    }
+
+    /// 异步把 targets(字段ID=标签文本, 默认值)逐个填入窗口。只填当前为空的字段。
+    private func fillFields(in window: SAPWindow, targets: [(field: String, value: String)]) {
+        filling = true
+        let win = window.axElement
+        let pid = window.pid
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            defer { DispatchQueue.main.async { self?.filling = false } }
+            guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+            app.activate()
+            usleep(150_000)
+            for t in targets {
+                let candidates = self?.editableFields(in: win, label: t.field) ?? []
+                // 多个同标签候选(占位 + 真正输入框,或普通框 + 密码框)里,
+                // 挑第一个当前为空的来填;避免覆盖已有值、也避免填进占位元素。
+                guard let field = candidates.first(where: {
+                    (Self.copyString($0, kAXValueAttribute) ?? "").isEmpty
+                }) else { continue }
+                Self.typeInto(field, text: t.value)
+                usleep(80_000)
+            }
+        }
+    }
+
+    /// 在窗口里找所有"标签匹配"的 AXTextField 候选(含密码框),按树序返回。
+    ///
+    /// SAP 每个字段在 AX 里成对出现:占位(val=标签文字)+ 真正输入框;
+    /// 两者 AXDescription 都等于字段标签(可能带 " - Required" 后缀)。
+    /// 调用方从候选里挑"当前为空"的那个填,从而命中真正的输入框、跳过占位。
+    private func editableFields(in window: AXUIElement, label: String) -> [AXUIElement] {
+        var result: [AXUIElement] = []
+        func walk(_ el: AXUIElement, depth: Int) {
+            if depth > 30 { return }
+            if copyStringAttribute(el, kAXRoleAttribute) == "AXTextField",
+               let desc = copyStringAttribute(el, kAXDescriptionAttribute),
+               Self.normalizeFieldLabel(desc) == label {
+                result.append(el)
+            }
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &ref) == .success,
+               let kids = ref as? [AXUIElement] {
+                for k in kids { walk(k, depth: depth + 1) }
+            }
+        }
+        walk(window, depth: 0)
+        return result
+    }
+
+    /// 规范化字段标签:去掉 SAP 加的 " - Required" 等必填后缀,首尾去空格。
+    /// 这样配置里写 "User" 就能匹配 desc="User - Required" 的字段。
+    static func normalizeFieldLabel(_ desc: String) -> String {
+        var s = desc
+        for suffix in [" - Required"] {
+            if s.hasSuffix(suffix) { s = String(s.dropLast(suffix.count)) }
+        }
+        return s.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 聚焦字段并用键盘事件逐字符键入(SAP Java 控件不接受 AXSetValue,只认键盘)
+    private static func typeInto(_ field: AXUIElement, text: String) {
+        AXUIElementSetAttributeValue(field, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        usleep(120_000)
+        let src = CGEventSource(stateID: .combinedSessionState)
+        for ch in text.unicodeScalars {
+            var u = UniChar(ch.value)
+            let down = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: true)
+            down?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u)
+            down?.post(tap: .cghidEventTap)
+            let up = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: false)
+            up?.keyboardSetUnicodeString(stringLength: 1, unicodeString: &u)
+            up?.post(tap: .cghidEventTap)
+            usleep(15_000)
+        }
+    }
+
+    /// 静态版 copyString(供后台队列里的填值用,不依赖实例)
+    private static func copyString(_ element: AXUIElement, _ attr: String) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attr as CFString, &ref) == .success else { return nil }
+        return ref as? String
     }
 
     /// 两个窗口列表的显示内容是否完全一致(顺序 + id + title + tcode)

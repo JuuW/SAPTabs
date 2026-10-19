@@ -12,13 +12,17 @@ import AppKit
 final class MutableNode {
     enum Kind { case code, text, folder }
     var kind: Kind
-    var value: String            // code/text 的内容,或文件夹名
+    var value: String            // 叶子的显示文本(display),或文件夹名。排序/判重/拖拽都用它。
+    var clickValue: String       // 叶子点击时实际拷贝/执行的内容(可空;空则回退用 value)。folder 恒为空。
+    var note: String             // 叶子的备注(folder 恒为空)
     var children: [MutableNode]
     weak var parent: MutableNode?
 
-    init(kind: Kind, value: String, children: [MutableNode] = []) {
+    init(kind: Kind, value: String, clickValue: String = "", note: String = "", children: [MutableNode] = []) {
         self.kind = kind
         self.value = value
+        self.clickValue = clickValue
+        self.note = note
         self.children = children
         for c in children { c.parent = self }
     }
@@ -40,8 +44,8 @@ final class MutableNode {
     static func from(_ nodes: [TCodeNode]) -> [MutableNode] {
         nodes.map { node in
             switch node {
-            case .code(let c): return MutableNode(kind: .code, value: c)
-            case .text(let t): return MutableNode(kind: .text, value: t)
+            case .code(let d, let v, let note): return MutableNode(kind: .code, value: d, clickValue: v, note: note)
+            case .text(let d, let v, let note): return MutableNode(kind: .text, value: d, clickValue: v, note: note)
             case .folder(let name, let kids):
                 return MutableNode(kind: .folder, value: name, children: from(kids))
             }
@@ -51,8 +55,8 @@ final class MutableNode {
     static func toTCodeNodes(_ nodes: [MutableNode]) -> [TCodeNode] {
         nodes.map { n in
             switch n.kind {
-            case .code: return .code(n.value)
-            case .text: return .text(n.value)
+            case .code: return .code(display: n.value, value: n.clickValue, note: n.note)
+            case .text: return .text(display: n.value, value: n.clickValue, note: n.note)
             case .folder: return .folder(name: n.value, children: toTCodeNodes(n.children))
             }
         }
@@ -96,6 +100,8 @@ final class ManageWindowController: NSObject, NSOutlineViewDataSource, NSOutline
         outline.registerForDraggedTypes([Self.dragType])
         outline.setDraggingSourceOperationMask(.move, forLocal: true)
         outline.floatsGroupRows = false
+        outline.target = self
+        outline.doubleAction = #selector(editClicked)
         self.outline = outline
 
         let scroll = NSScrollView()
@@ -105,12 +111,13 @@ final class ManageWindowController: NSObject, NSOutlineViewDataSource, NSOutline
         scroll.drawsBackground = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
 
-        // 底部工具栏:+ 节点 / + 文件夹 / 删除(作用于选中项所在层级)
+        // 底部工具栏:+ 节点 / + 文件夹 / 编辑 / 删除(作用于选中项所在层级)
         let addNodeBtn = makeToolButton("+ 节点", #selector(addNodeClicked))
         let addFolderBtn = makeToolButton("+ 文件夹", #selector(addFolderClicked))
+        let editBtn = makeToolButton("编辑", #selector(editClicked))
         let deleteBtn = makeToolButton("删除", #selector(deleteClicked))
 
-        let bar = NSStackView(views: [addNodeBtn, addFolderBtn, NSView(), deleteBtn])
+        let bar = NSStackView(views: [addNodeBtn, addFolderBtn, NSView(), editBtn, deleteBtn])
         bar.orientation = .horizontal
         bar.spacing = 8
         bar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
@@ -203,19 +210,33 @@ final class ManageWindowController: NSObject, NSOutlineViewDataSource, NSOutline
 
         switch node.kind {
         case .folder:
-            cell.textField?.stringValue = node.value
-            cell.textField?.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+            cell.textField?.attributedStringValue = NSAttributedString(string: node.value, attributes: [
+                .font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)
+            ])
             cell.imageView?.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil)
         case .code:
-            cell.textField?.stringValue = node.value
-            cell.textField?.font = .systemFont(ofSize: NSFont.systemFontSize)
+            cell.textField?.attributedStringValue = Self.leafCellTitle(node.value, note: node.note)
             cell.imageView?.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: nil)
         case .text:
-            cell.textField?.stringValue = node.value
-            cell.textField?.font = .systemFont(ofSize: NSFont.systemFontSize)
+            cell.textField?.attributedStringValue = Self.leafCellTitle(node.value, note: node.note)
             cell.imageView?.image = nil
         }
         return cell
+    }
+
+    /// 整理窗口里的叶子标题:主文本 + 备注(灰色、小一号),备注接在文本后面(outline 行宽不定,不做右对齐)。
+    private static func leafCellTitle(_ text: String, note: String) -> NSAttributedString {
+        let base = NSFont.systemFontSize
+        let s = NSMutableAttributedString(
+            string: text,
+            attributes: [.font: NSFont.systemFont(ofSize: base)])
+        if !note.isEmpty {
+            s.append(NSAttributedString(
+                string: "   " + note,
+                attributes: [.font: NSFont.systemFont(ofSize: base - 1),
+                             .foregroundColor: NSColor.secondaryLabelColor]))
+        }
+        return s
     }
 
     // MARK: - 拖拽
@@ -301,22 +322,24 @@ final class ManageWindowController: NSObject, NSOutlineViewDataSource, NSOutline
 
     @objc private func addNodeClicked() {
         guard let r = TextPrompt.run(title: "添加节点",
-                                     message: "请输入内容:",
-                                     placeholder: "事务码或文本",
+                                     message: "请输入显示文本:",
+                                     placeholder: "显示文本",
+                                     valuePlaceholder: "实际值(可空,留空则拷贝显示文本)",
+                                     notePlaceholder: "备注(可空)",
                                      checkboxTitle: "作为事务码添加",
                                      checkboxOn: true),
               !r.text.isEmpty else { return }
-        let value = r.text.uppercased()
+        let display = r.text.uppercased()
         let folder = targetFolderForInsert()
         let kind: MutableNode.Kind = r.checked ? .code : .text
 
-        // 同层级同类重名判重(code 不区分大小写、text 完全相同——这里都已大写,统一按相等判)
-        if siblings(in: folder).contains(where: { $0.kind == kind && $0.value == value }) {
-            alert("已存在", "\"\(value)\" 已在该文件夹中。")
+        // 同层级同类按 display 判重(code 不区分大小写、text 完全相同——这里都已大写,统一按相等判)
+        if siblings(in: folder).contains(where: { $0.kind == kind && $0.value == display }) {
+            alert("已存在", "\"\(display)\" 已在该文件夹中。")
             return
         }
 
-        let node = MutableNode(kind: kind, value: value)
+        let node = MutableNode(kind: kind, value: display, clickValue: r.value, note: r.note)
         insert(node, into: folder)
     }
 
@@ -333,6 +356,63 @@ final class ManageWindowController: NSObject, NSOutlineViewDataSource, NSOutline
         }
         let node = MutableNode(kind: .folder, value: name)
         insert(node, into: folder)
+    }
+
+    /// 编辑选中项(双击行或点"编辑"按钮触发)。
+    /// 叶子:可改内容、备注,并可切换事务码/普通文本两种类型。
+    /// 文件夹:只改名称。改动在同层级做重名判重(排除自身)。
+    @objc private func editClicked() {
+        guard let outline = outline else { return }
+        let row = outline.selectedRow
+        guard row >= 0, let node = outline.item(atRow: row) as? MutableNode else {
+            alert("未选中", "请先选中要编辑的项。")
+            return
+        }
+        let folder = node.parent          // 同层级 = 父文件夹(nil = 根级)
+        let peers = siblings(in: folder)
+
+        if node.isFolder {
+            guard let r = TextPrompt.run(title: "编辑文件夹",
+                                         message: "请输入文件夹名称:",
+                                         placeholder: "文件夹名",
+                                         initialText: node.value),
+                  !r.text.isEmpty else { return }
+            let name = r.text
+            if peers.contains(where: { $0 !== node && $0.isFolder
+                && $0.value.caseInsensitiveCompare(name) == .orderedSame }) {
+                alert("已存在", "文件夹 \"\(name)\" 已在该层级中。")
+                return
+            }
+            node.value = name
+        } else {
+            let wasCode = node.kind == .code
+            guard let r = TextPrompt.run(title: "编辑节点",
+                                         message: "请输入显示文本:",
+                                         placeholder: "显示文本",
+                                         initialText: node.value,
+                                         initialValue: node.clickValue,
+                                         initialNote: node.note,
+                                         valuePlaceholder: "实际值(可空,留空则拷贝显示文本)",
+                                         notePlaceholder: "备注(可空)",
+                                         checkboxTitle: "作为事务码添加",
+                                         checkboxOn: wasCode),
+                  !r.text.isEmpty else { return }
+            let display = r.text.uppercased()
+            let kind: MutableNode.Kind = r.checked ? .code : .text
+            if peers.contains(where: { $0 !== node && $0.kind == kind && $0.value == display }) {
+                alert("已存在", "\"\(display)\" 已在该文件夹中。")
+                return
+            }
+            node.kind = kind
+            node.value = display
+            node.clickValue = r.value
+            node.note = r.note
+        }
+
+        commit()
+        outline.reloadData()
+        let r = outline.row(forItem: node)
+        if r >= 0 { outline.selectRowIndexes(IndexSet(integer: r), byExtendingSelection: false) }
     }
 
     /// 把新节点挂到目标文件夹(或根级),写回、刷新、展开并选中

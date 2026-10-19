@@ -3,16 +3,20 @@ import Foundation
 /// 收藏树的节点:事务码(叶子)、普通文本(叶子)、或文件夹(含子节点)。
 /// - code:事务码,点击填入 OK Code 并执行,显示时前面带闪电图标。
 /// - text:普通文本,点击只复制到剪贴板,不进 OK Code。
+/// 叶子(code/text)有三个字段:
+///   - display:显示用文本(必填,也是排序/判重依据)
+///   - value:点击时实际拷贝/执行的内容(可空;空则回退用 display)
+///   - note:一段备注(可空),显示时右对齐、字号小一号
 enum TCodeNode: Codable, Equatable {
-    case code(String)
-    case text(String)
+    case code(display: String, value: String, note: String)
+    case text(display: String, value: String, note: String)
     case folder(name: String, children: [TCodeNode])
 
-    /// 排序用的显示名(folder 用名字,叶子用其值)
+    /// 排序 / 显示用的名字(folder 用名字,叶子用 display)
     var sortName: String {
         switch self {
-        case .code(let c): return c
-        case .text(let t): return t
+        case .code(let d, _, _): return d
+        case .text(let d, _, _): return d
         case .folder(let n, _): return n
         }
     }
@@ -31,34 +35,50 @@ enum TCodeNode: Codable, Equatable {
     }
 
     // 自定义编解码:
-    //   {"type":"code","value":"SE24"}
-    //   {"type":"text","value":"随便记点东西"}
+    //   {"type":"code","display":"类编辑器","value":"SE24","note":"..."}
+    //   {"type":"text","display":"随便记点东西","value":"","note":""}
     //   {"type":"folder","name":"Dev","children":[...]}
-    private enum CodingKeys: String, CodingKey { case type, value, name, children }
+    // 兼容旧格式:旧叶子只有 "value" 字段(既显示又拷贝)。缺 display 时把旧 value 当 display、
+    // 新 value 置空(即点击仍拷贝 display,行为不变)。note 缺省按空串。
+    private enum CodingKeys: String, CodingKey { case type, display, value, name, children, note }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        func leaf() throws -> (String, String, String) {
+            let note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+            let rawValue = try c.decodeIfPresent(String.self, forKey: .value) ?? ""
+            if let display = try c.decodeIfPresent(String.self, forKey: .display) {
+                return (display, rawValue, note)          // 新格式
+            }
+            return (rawValue, "", note)                   // 旧格式:value 即 display
+        }
         switch try c.decode(String.self, forKey: .type) {
         case "folder":
             let name = try c.decode(String.self, forKey: .name)
             let children = try c.decodeIfPresent([TCodeNode].self, forKey: .children) ?? []
             self = .folder(name: name, children: children)
         case "text":
-            self = .text(try c.decode(String.self, forKey: .value))
+            let (d, v, n) = try leaf()
+            self = .text(display: d, value: v, note: n)
         default:
-            self = .code(try c.decode(String.self, forKey: .value))
+            let (d, v, n) = try leaf()
+            self = .code(display: d, value: v, note: n)
         }
     }
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .code(let v):
+        case .code(let d, let v, let note):
             try c.encode("code", forKey: .type)
+            try c.encode(d, forKey: .display)
             try c.encode(v, forKey: .value)
-        case .text(let v):
+            try c.encode(note, forKey: .note)
+        case .text(let d, let v, let note):
             try c.encode("text", forKey: .type)
+            try c.encode(d, forKey: .display)
             try c.encode(v, forKey: .value)
+            try c.encode(note, forKey: .note)
         case .folder(let name, let children):
             try c.encode("folder", forKey: .type)
             try c.encode(name, forKey: .name)
@@ -89,33 +109,37 @@ final class TCodeStore: ObservableObject {
     }
 
     /// 在指定文件夹路径下添加事务码。路径为空表示根级。
-    /// 该级已存在同名 code(不区分大小写)返回 false;否则加入、排序、落盘返回 true。
+    /// 该级已存在同名(按 display,不区分大小写)返回 false;否则加入、排序、落盘返回 true。
     @discardableResult
-    func addCode(_ raw: String, at path: [String]) -> Bool {
-        let code = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !code.isEmpty else { return false }
+    func addCode(_ raw: String, value: String = "", note: String = "", at path: [String]) -> Bool {
+        let display = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !display.isEmpty else { return false }
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
         return mutate(at: path) { children in
             if children.contains(where: {
-                if case .code(let c) = $0 { return c.caseInsensitiveCompare(code) == .orderedSame }
+                if case .code(let d, _, _) = $0 { return d.caseInsensitiveCompare(display) == .orderedSame }
                 return false
             }) { return false }
-            children.append(.code(code))
+            children.append(.code(display: display, value: value, note: note))
             return true
         }
     }
 
     /// 在指定文件夹路径下添加普通文本节点(点击只复制到剪贴板)。
-    /// 统一转为大写、与事务码保持一致。该级已存在完全相同文本返回 false。
+    /// 该级已存在完全相同 display 返回 false。
     @discardableResult
-    func addText(_ raw: String, at path: [String]) -> Bool {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !text.isEmpty else { return false }
+    func addText(_ raw: String, value: String = "", note: String = "", at path: [String]) -> Bool {
+        let display = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !display.isEmpty else { return false }
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = note.trimmingCharacters(in: .whitespacesAndNewlines)
         return mutate(at: path) { children in
             if children.contains(where: {
-                if case .text(let t) = $0 { return t == text }
+                if case .text(let d, _, _) = $0 { return d == display }
                 return false
             }) { return false }
-            children.append(.text(text))
+            children.append(.text(display: display, value: value, note: note))
             return true
         }
     }
@@ -137,26 +161,26 @@ final class TCodeStore: ObservableObject {
 
     // MARK: - 内部
 
-    /// 删除 path 层级下的某个事务码
+    /// 删除 path 层级下的某个事务码(按 display 匹配)
     @discardableResult
-    func removeCode(_ code: String, at path: [String]) -> Bool {
+    func removeCode(_ display: String, at path: [String]) -> Bool {
         mutate(at: path) { children in
             let before = children.count
             children.removeAll {
-                if case .code(let c) = $0 { return c.caseInsensitiveCompare(code) == .orderedSame }
+                if case .code(let d, _, _) = $0 { return d.caseInsensitiveCompare(display) == .orderedSame }
                 return false
             }
             return children.count != before
         }
     }
 
-    /// 删除 path 层级下的某个普通文本节点(按完全相同文本匹配)
+    /// 删除 path 层级下的某个普通文本节点(按完全相同 display 匹配)
     @discardableResult
-    func removeText(_ text: String, at path: [String]) -> Bool {
+    func removeText(_ display: String, at path: [String]) -> Bool {
         mutate(at: path) { children in
             let before = children.count
             children.removeAll {
-                if case .text(let t) = $0 { return t == text }
+                if case .text(let d, _, _) = $0 { return d == display }
                 return false
             }
             return children.count != before
@@ -248,7 +272,7 @@ final class TCodeStore: ObservableObject {
         }
         // 旧格式:扁平字符串数组 → 升级为根级叶子
         if let flat = try? JSONDecoder().decode([String].self, from: data) {
-            var t = flat.map { TCodeNode.code($0) }
+            var t = flat.map { TCodeNode.code(display: $0, value: "", note: "") }
             sortTree(&t)
             root = t
             save() // 顺手写回新格式
@@ -256,7 +280,58 @@ final class TCodeStore: ObservableObject {
     }
 
     private func save() {
-        guard let data = try? JSONEncoder().encode(root) else { return }
+        let json = Self.serialize(root)
+        guard let data = json.data(using: .utf8) else { return }
         try? data.write(to: fileURL, options: .atomic)
+    }
+
+    // MARK: - 自定义 JSON 序列化(仍是合法 JSON,load 用标准 JSONDecoder 读回)
+    //
+    // 目标排版:叶子(code/text)压成一行,文件夹(含 children 数组)分行缩进。
+    // 键按固定语义顺序输出:type → display/name → value → note → children。
+    // JSONEncoder 的 .prettyPrinted 做不到"叶子单行、容器展开"的混合排版,故手写。
+
+    /// 把一层节点数组序列化成带缩进的 JSON 文本。indent 为当前层缩进(空格串)。
+    private static func serialize(_ nodes: [TCodeNode], indent: String = "") -> String {
+        if nodes.isEmpty { return "[]" }
+        let inner = indent + "  "
+        let items = nodes.map { inner + serialize(node: $0, indent: inner) }
+        return "[\n" + items.joined(separator: ",\n") + "\n" + indent + "]"
+    }
+
+    /// 序列化单个节点。叶子返回单行对象;文件夹返回多行(type/name 各一行、children 递归展开)。
+    private static func serialize(node: TCodeNode, indent: String) -> String {
+        switch node {
+        case .code(let d, let v, let note):
+            return leafLine(type: "code", display: d, value: v, note: note)
+        case .text(let d, let v, let note):
+            return leafLine(type: "text", display: d, value: v, note: note)
+        case .folder(let name, let children):
+            let inner = indent + "  "
+            let kids = serialize(children, indent: inner)
+            return "{\n"
+                + inner + "\"type\": \"folder\",\n"
+                + inner + "\"name\": \(quote(name)),\n"
+                + inner + "\"children\": \(kids)\n"
+                + indent + "}"
+        }
+    }
+
+    /// 叶子对象的单行形式:{ "type": .., "display": .., "value": .., "note": .. }
+    private static func leafLine(type: String, display: String, value: String, note: String) -> String {
+        "{ \"type\": \"\(type)\", \"display\": \(quote(display)), \"value\": \(quote(value)), \"note\": \(quote(note)) }"
+    }
+
+    /// 把字符串编成合法的 JSON 字符串字面量(含首尾引号)。借用 JSONEncoder 处理转义,
+    /// 不转义斜杠,保留中文原样,保证输出可被 JSONDecoder 读回。
+    private static func quote(_ s: String) -> String {
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.withoutEscapingSlashes]
+        if let data = try? enc.encode([s]), let str = String(data: data, encoding: .utf8) {
+            // encode 单个字符串在部分平台需 fragmentsAllowed;改为编码单元素数组再剥掉首尾 [ ]
+            let trimmed = str.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            return trimmed
+        }
+        return "\"\""
     }
 }
