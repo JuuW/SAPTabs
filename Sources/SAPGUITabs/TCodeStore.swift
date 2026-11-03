@@ -98,7 +98,19 @@ final class TCodeStore: ObservableObject {
         FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".sapguitabs_tcodes.json")
     }()
 
-    init() { load() }
+    init() {
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            installDemoIfPresent()
+        }
+        load()
+    }
+
+    /// 首次运行(用户目录无收藏配置)时,从 app bundle 里的示例文件
+    /// Resources/sapguitabs_tcodes.demo.json 拷一份到用户目录。找不到则静默跳过(空树)。
+    private func installDemoIfPresent() {
+        guard let demoURL = Bundle.main.url(forResource: "sapguitabs_tcodes.demo", withExtension: "json") else { return }
+        try? FileManager.default.copyItem(at: demoURL, to: fileURL)
+    }
 
     /// 用一棵新树整体替换收藏(管理窗口拖拽重排后写回)。会递归排序并落盘。
     func replaceRoot(_ newRoot: [TCodeNode]) {

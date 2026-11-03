@@ -1,33 +1,44 @@
 import Foundation
 
-/// 字段默认值配置:从 ~/.sapguitabs_defaults.conf 读取。
+/// 字段默认值配置:从 ~/.sapguitabs_defaults.json 读取。
 ///
-/// 每行一条:`系统ID,Tcode,字段ID = 默认值`
-///   - 系统ID:窗口标题前三字符(如 SWA、DWC),大小写不敏感
-///   - Tcode:事务码(如 SE16、S000),大小写不敏感;登录屏/主屏读不到码时用空串匹配不到,一般不配
-///   - 字段ID:字段的标签文本,对应 AX 的 AXHelp(如 "Table Name"、"Logon Language"),大小写敏感(SAP 标签就那样显示)
-///   - 默认值:要填入的内容
-/// `#` 开头的行与空行忽略。不支持通配。
+/// JSON 结构(与收藏配置 ~/.sapguitabs_tcodes.json 一样用 Codable,保持两份配置格式一致):
+/// ```json
+/// {
+///   "rules": [
+///     { "system": "SWA", "tcode": "S000", "field": "User",     "value": "JIANWA1" },
+///     { "system": "SWA", "tcode": "S000", "field": "Password", "value": "******"  }
+///   ]
+/// }
+/// ```
+///   - system:窗口标题前三字符(如 SWA、DWC),大小写不敏感(存/比都 uppercased)
+///   - tcode:事务码(如 SE16、S000),大小写不敏感;登录屏/主屏统一按 S000 配
+///   - field:字段的标签文本,对应 AX 的 AXDescription(如 "Table Name"、"User"),大小写敏感(SAP 标签就那样显示)
+///   - value:要填入的内容
 ///
 /// 这些默认值在某窗口首次进入对应 tcode 时,由 SAPWindowManager 自动填入(仅当字段为空)。
 final class DefaultsStore {
-    /// 一条默认值规则
-    struct Rule {
-        let system: String   // 已 uppercased
-        let tcode: String    // 已 uppercased
+    /// 一条默认值规则(JSON 里 rules 数组的元素)
+    struct Rule: Codable {
+        let system: String   // 读入后 uppercased
+        let tcode: String    // 读入后 uppercased
         let field: String    // 原样(大小写敏感)
         let value: String
+    }
+
+    private struct ConfigFile: Codable {
+        var rules: [Rule]
     }
 
     private(set) var rules: [Rule] = []
 
     private let fileURL: URL = {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".sapguitabs_defaults.conf")
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".sapguitabs_defaults.json")
     }()
 
     init() {
         if !FileManager.default.fileExists(atPath: fileURL.path) {
-            writeTemplate()
+            installDemoIfPresent()
         }
         load()
     }
@@ -44,48 +55,43 @@ final class DefaultsStore {
     /// 重新从磁盘加载(供手动刷新用)
     func reload() { load() }
 
+    /// 新增/更新一条规则并写回磁盘。
+    /// 同 (system, tcode, field) 已存在时覆盖其 value(system/tcode 不区分大小写,field 大小写敏感)。
+    /// 返回 true 表示写盘成功。
+    @discardableResult
+    func addRule(system: String, tcode: String, field: String, value: String) -> Bool {
+        let sys = system.uppercased()
+        let code = tcode.uppercased()
+        let fld = field.trimmingCharacters(in: .whitespaces)
+        guard !sys.isEmpty, !code.isEmpty, !fld.isEmpty else { return false }
+
+        var current = rules.filter { !($0.system == sys && $0.tcode == code && $0.field == fld) }
+        current.append(Rule(system: sys, tcode: code, field: fld, value: value))
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(ConfigFile(rules: current)) else { return false }
+        guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return false }
+        rules = current
+        return true
+    }
+
     // MARK: - 内部
 
     private func load() {
         rules = []
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
-        for rawLine in text.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            // 拆成 "键 = 值";值里可能含 "="(如含等号的默认值),只按第一个 "=" 切
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let keyPart = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
-            let value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
-            // 键拆成 系统ID,Tcode,字段ID(字段ID里不含逗号;SAP 标签不含逗号)
-            let keys = keyPart.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard keys.count == 3 else { continue }
-            let system = keys[0], tcode = keys[1], field = keys[2]
-            if system.isEmpty || tcode.isEmpty || field.isEmpty { continue }
-            rules.append(Rule(system: system.uppercased(), tcode: tcode.uppercased(), field: field, value: value))
-        }
+        guard let data = try? Data(contentsOf: fileURL),
+              let config = try? JSONDecoder().decode(ConfigFile.self, from: data) else { return }
+        rules = config.rules
+            .filter { !$0.system.isEmpty && !$0.tcode.isEmpty && !$0.field.isEmpty }
+            .map { Rule(system: $0.system.uppercased(), tcode: $0.tcode.uppercased(), field: $0.field, value: $0.value) }
     }
 
-    /// 首次运行写一份带注释的示例模板,方便用户照着改
-    private func writeTemplate() {
-        let template = """
-        # SAP GUI Tabs 字段默认值配置
-        #
-        # 每行一条规则,格式:
-        #   系统ID,Tcode,字段ID = 默认值
-        #
-        #   系统ID  = 窗口标题前三个字符(如 SWA、DWC),不区分大小写
-        #   Tcode   = 事务码(如 SE16、SE38),不区分大小写
-        #   字段ID  = 字段左边的标签文字(如 Table Name、Program),区分大小写,照屏幕上显示的写
-        #   默认值  = 要自动填入的内容
-        #
-        # 规则:某个会话窗口第一次进入对应 tcode 时,若该字段当前为空,就自动填入默认值。
-        #       # 开头的行和空行会被忽略。不支持通配符。
-        #
-        # 示例(按需取消注释并改成你自己的):
-        # SWA,SE16,Table Name = MARA
-        # DWC,SE38,Program = ZHELLO_WORLD
-
-        """
-        try? template.write(to: fileURL, atomically: true, encoding: .utf8)
+    /// 首次运行(用户目录无此配置)时,从 app bundle 里的示例文件
+    /// Resources/sapguitabs_defaults.demo.json 拷一份到用户目录,方便照着改。
+    /// 找不到示例文件时静默跳过(load 会得到空规则,不报错)。
+    private func installDemoIfPresent() {
+        guard let demoURL = Bundle.main.url(forResource: "sapguitabs_defaults.demo", withExtension: "json") else { return }
+        try? FileManager.default.copyItem(at: demoURL, to: fileURL)
     }
 }

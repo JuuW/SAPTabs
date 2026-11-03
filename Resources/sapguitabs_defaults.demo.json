@@ -1,0 +1,28 @@
+{
+  "rules" : [
+    {
+      "system" : "SWA",
+      "tcode" : "SE16",
+      "field" : "Table Name",
+      "value" : "MARA"
+    },
+    {
+      "system" : "SWA",
+      "tcode" : "SE11",
+      "field" : "Table Name",
+      "value" : "MARA"
+    },
+    {
+      "system" : "SWA",
+      "tcode" : "S000",
+      "field" : "User",
+      "value" : "YOUR_USER"
+    },
+    {
+      "system" : "SWA",
+      "tcode" : "S000",
+      "field" : "Password",
+      "value" : "xxxx"
+    }
+  ]
+}

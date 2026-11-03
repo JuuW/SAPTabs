@@ -34,7 +34,9 @@ final class SAPWindowManager: ObservableObject {
 
     // 字段默认值配置(可空;main 注入)。某窗口首次进入某 tcode 时自动填入默认值。
     var defaultsStore: DefaultsStore?
-    // 已填过默认值的 "窗口id|tcode",保证每窗口每 tcode 只填一次(本次运行内)
+    // 已填过默认值的 "窗口id|tcode",保证每窗口每 tcode 只填一次(本次运行内)。
+    // 必须"只填一次":填值要 activate + 设字段焦点,若每秒触发会反复抢走用户
+    // 正在输入 OK code / 其它字段的焦点,根本没法打字。
     private var filledKeys: Set<String> = []
     // 正在异步填值,避免同一轮重入
     private var filling = false
@@ -230,7 +232,9 @@ final class SAPWindowManager: ObservableObject {
             guard !code.isEmpty else { continue }           // 主屏/弹窗等无码场景,跳过
 
             // 去重:同一窗口的同一 tcode 本次运行只填一次。
-            // (不依赖"tcode 变化"检测——那个在窗口未聚焦的刷新里会被提前消耗掉。)
+            // 必须"只填一次":填值会 activate + 设字段焦点,若每秒重复触发会不停抢走
+            // 用户正在输入 OK code / 其它字段的焦点,导致没法打字。重进同一 tcode
+            // 要重填的话,用菜单「重新加载默认值配置」清掉记录即可。
             let fillKey = "\(w.id)|\(code)"
             guard !filledKeys.contains(fillKey) else { continue }
 
@@ -246,6 +250,12 @@ final class SAPWindowManager: ObservableObject {
             fillFields(in: w, targets: targets)
             break // 一轮只处理一个窗口,避免并发填值
         }
+    }
+
+    /// 清空"已填过"记录,让在场窗口/tcode 下次刷新时按最新配置重新评估填充。
+    /// 供菜单「重新加载默认值配置」/「添加默认值」在改配置后调用,不必重登即生效。
+    func resetFilledState() {
+        filledKeys.removeAll()
     }
 
     /// 判断窗口是否为登录屏:AXScrollArea 下同时存在 Client、User、Password 三个字段标签。
@@ -374,6 +384,96 @@ final class SAPWindowManager: ObservableObject {
     /// 系统 ID:取窗口标题前三个字符(如 "I72 (1) (001)" → "I72")
     func systemID(_ title: String) -> String {
         String(title.prefix(3))
+    }
+
+    /// 抓取当前前台 SAP 窗口的上下文 + 它所有可填输入框的标签列表,供手动添加默认值用。
+    /// 返回 (系统ID, tcode, 去重后的字段标签列表);拿不到前台窗口/有效 tcode 时返回 nil。
+    ///
+    /// SAP GUI for Java 不通过 AX 暴露"当前光标在哪个框"(系统级/应用级/窗口级 focused、AXFocused 均不可用),
+    /// 所以改为列出整窗口的候选字段供用户选。
+    /// - 字段标签:AXTextField / AXSecureTextField 的 AXDescription,经 normalizeFieldLabel 去掉 " - Required" 后缀;
+    ///   空标签、命令框("command field")忽略;同标签去重、保持出现顺序。
+    /// - 系统ID / tcode:取前台窗口(与自动填充口径一致);登录屏读不到码时按 S000。
+    func captureFieldChoices() -> (system: String, tcode: String, fields: [String])? {
+        guard let front = windows.first(where: { $0.id == frontWindowID }) else { return nil }
+        var code = front.tcode ?? ""
+        if code.isEmpty, isLoginScreen(front.axElement) { code = "S000" }
+        guard !code.isEmpty else { return nil }
+
+        var seen = Set<String>()
+        var fields: [String] = []
+        func walk(_ el: AXUIElement, _ depth: Int) {
+            if depth > 30 { return }
+            let role = copyStringAttribute(el, kAXRoleAttribute) ?? ""
+            if role == "AXTextField" || role == "AXSecureTextField",
+               let desc = copyStringAttribute(el, kAXDescriptionAttribute) {
+                let label = Self.normalizeFieldLabel(desc)
+                if !label.isEmpty, label != "command field", !seen.contains(label) {
+                    seen.insert(label)
+                    fields.append(label)
+                }
+            }
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &ref) == .success,
+               let kids = ref as? [AXUIElement] {
+                for k in kids { walk(k, depth + 1) }
+            }
+        }
+        walk(front.axElement, 0)
+        guard !fields.isEmpty else { return nil }
+
+        return (system: systemID(front.title), tcode: code, fields: fields)
+    }
+
+    /// 读取"鼠标当前所指的 SAP 树节点"的完整路径并复制到剪贴板,返回该路径(失败返回 nil)。
+    ///
+    /// SAP GUI for Java 不把树的选中/高亮态暴露给辅助功能接口(AXSelected 满屏 true、
+    /// AXSelectedRows 读不到),所以无法知道"哪一行高亮"。但鼠标所指的元素可直接命中:
+    ///   1. AXUIElementCopyElementAtPosition(鼠标坐标) → 命中那一行的 AXStaticText;
+    ///   2. 沿 AXParent 一路上爬到 AXOutline,途中每个 AXStaticText 就是一级祖先节点;
+    ///   3. 节点名 = 元素 AXDescription 用 " - " 分隔的最后一段(SAP 在前面堆了 Documentation/
+    ///      Status Information 等杂项)。反转拼成 "根 > … > 当前节点"。
+    /// 这是真父子关系,层级 100% 准确,不依赖缩进/选中态。
+    func copyTreePathAtMouse() -> String? {
+        // NSEvent.mouseLocation 原点在左下;AX 坐标系原点在左上,需用总高度翻转 y。
+        let mouse = NSEvent.mouseLocation
+        let maxY = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+        let axY = maxY - mouse.y
+
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.localizedName == processName }) else { return nil }
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+
+        var hitRef: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(axApp, Float(mouse.x), Float(axY), &hitRef) == .success,
+              let hit = hitRef else { return nil }
+
+        // 命中元素必须是树节点文本
+        guard copyStringAttribute(hit, kAXRoleAttribute) == "AXStaticText" else { return nil }
+
+        // 沿 AXParent 向上收集每一级节点名,直到遇到 AXOutline
+        var names: [String] = []
+        var cur: AXUIElement? = hit
+        var depth = 0
+        while let c = cur, depth < 40 {
+            let role = copyStringAttribute(c, kAXRoleAttribute) ?? ""
+            if role == "AXOutline" { break }        // 到达树根容器
+            if role == "AXStaticText", let desc = copyStringAttribute(c, kAXDescriptionAttribute) {
+                let name = desc.components(separatedBy: " - ").last ?? desc
+                if !name.isEmpty { names.append(name) }
+            }
+            var pRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(c, kAXParentAttribute as CFString, &pRef) == .success,
+                  let parent = pRef as! AXUIElement? else { break }
+            cur = parent
+            depth += 1
+        }
+        guard !names.isEmpty else { return nil }
+
+        let path = names.reversed().joined(separator: " > ")
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(path, forType: .string)
+        return path
     }
 
     /// 完整显示标签:系统 ID + 当前事务码(如 "DWC /SCWM/MON")。

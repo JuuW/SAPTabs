@@ -1,0 +1,12 @@
+[
+  {
+    "type": "folder",
+    "name": "Demo 示例文件夹",
+    "children": [
+      { "type": "code", "display": "SE16", "value": "", "note": "数据浏览器" },
+      { "type": "code", "display": "SE38", "value": "", "note": "ABAP 编辑器" },
+      { "type": "text", "display": "示例文本节点", "value": "点击我会复制这段文字", "note": "普通文本,点击只复制" }
+    ]
+  },
+  { "type": "code", "display": "SE11", "value": "", "note": "字典" }
+]
