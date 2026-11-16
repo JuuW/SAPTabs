@@ -20,6 +20,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // 用户是否通过菜单手动隐藏了面板(手动隐藏时不自动弹出)
     private var manuallyHidden = false
 
+    // 浮条停靠位置:顶部(默认)或底部(紧贴 dock)。点击浮条右端箭头切换,落盘 UserDefaults。
+    private var dockAtBottom = false
+    private let dockAtBottomKey = "panelDockAtBottom"
+
     // 全局快捷键监听(复制鼠标所指 SAP 树节点的完整路径)。键位可在菜单里配置。
     private var hotKeyMonitor: Any?
     // 当前快捷键:keyCode + 修饰键。默认 ⌥⌘P(keyCode 35 = P)。
@@ -27,8 +31,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var hotKeyMods: NSEvent.ModifierFlags = [.command, .option]
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        dockAtBottom = UserDefaults.standard.bool(forKey: dockAtBottomKey)
         setupPanel()
         setupStatusItem()
+
+        // 浮条右端箭头按钮点击时发出此通知,切换顶部/底部停靠
+        NotificationCenter.default.addObserver(
+            forName: .toggleDockPosition, object: nil, queue: .main
+        ) { [weak self] _ in self?.toggleDockPosition() }
         manager.defaultsStore = defaultsStore
         manager.start()
         // 首次运行若无权限,主动引导
@@ -164,16 +174,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    // 固定:当前屏幕宽度的 90%、水平居中、紧贴屏幕最上方;高度固定 32
+    // 固定:当前屏幕宽度的 90%、水平居中;高度固定 28。
+    // dockAtBottom 为真时贴屏幕可见区底部(dock 上方),否则贴最上方。
     private func positionPanel(_ panel: NSPanel) {
         guard let screen = NSScreen.main else { return }
         let f = screen.visibleFrame
         let w = f.width * 0.9
         let h: CGFloat = 28   // 与 macOS 标准标题栏(SAP GUI 关闭按钮那行)等高
+        // visibleFrame 已排除 dock 与菜单栏:maxY-h 贴顶,minY 贴底(即 dock 正上方)
+        let y = dockAtBottom ? f.minY : f.maxY - h
         panel.setFrame(
-            NSRect(x: f.midX - w / 2, y: f.maxY - h, width: w, height: h),
+            NSRect(x: f.midX - w / 2, y: y, width: w, height: h),
             display: true
         )
+    }
+
+    /// 切换浮条停靠在屏幕顶部 / 底部,落盘记忆,立即重定位。
+    private func toggleDockPosition() {
+        dockAtBottom.toggle()
+        UserDefaults.standard.set(dockAtBottom, forKey: dockAtBottomKey)
+        positionPanel(panel)
     }
 
     private func setupStatusItem() {
@@ -367,6 +387,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 // MARK: - 启动入口(顶层代码)
+
+// 浮条右端「切换停靠位置」按钮 → AppDelegate 的通知
+extension Notification.Name {
+    static let toggleDockPosition = Notification.Name("SAPGUITabs.toggleDockPosition")
+}
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

@@ -41,6 +41,8 @@ struct TabBarView: View {
                 OverflowMenuView(manager: manager, state: overflow)
             }
             Spacer(minLength: 0)
+            // 最右:把浮条在屏幕顶部/底部之间切换的箭头按钮(常驻,不参与溢出布局)
+            DockToggleButton()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -105,6 +107,38 @@ struct TabBarView: View {
 // CLT 工具链缺少 SwiftUIMacros 插件,@State 宏无法展开,改用 ObservableObject 承载悬停态
 private final class HoverState: ObservableObject {
     @Published var on = false
+}
+
+/// 承载停靠方向状态(CLT 工具链无 @State 宏,改用 ObservableObject)。
+/// 初值从 UserDefaults 读,点击后本地翻转以更新箭头朝向,并发通知让 AppDelegate 重定位。
+private final class DockDirState: ObservableObject {
+    @Published var atBottom = UserDefaults.standard.bool(forKey: "panelDockAtBottom")
+}
+
+/// 浮条右端的停靠切换按钮:顶部时显示向下箭头(点击→移到底部),底部时显示向上箭头。
+struct DockToggleButton: View {
+    @StateObject private var dir = DockDirState()
+    @StateObject private var hover = HoverState()
+
+    var body: some View {
+        Button {
+            dir.atBottom.toggle()
+            NotificationCenter.default.post(name: .toggleDockPosition, object: nil)
+        } label: {
+            Image(systemName: dir.atBottom ? "chevron.up" : "chevron.down")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color(red: 0.12, green: 0.33, blue: 0.65))
+                .frame(width: 22, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(hover.on ? 0.9 : 0.6))
+                )
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 4)
+        .onHover { hover.on = $0 }
+        .help(dir.atBottom ? "把浮条移到屏幕顶部" : "把浮条移到屏幕底部(紧贴 Dock)")
+    }
 }
 
 struct TabChip: View {
