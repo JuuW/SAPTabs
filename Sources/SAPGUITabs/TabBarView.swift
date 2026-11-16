@@ -4,6 +4,7 @@ import AppKit
 struct TabBarView: View {
     @ObservedObject var manager: SAPWindowManager
     @ObservedObject var tcodeStore: TCodeStore
+    @ObservedObject var aliasStore: AliasStore
     @StateObject private var overflow = OverflowState()
 
     var body: some View {
@@ -90,11 +91,12 @@ struct TabBarView: View {
 
     /// 页签正文:只显当前事务码(如 "/SCWM/MON")。系统 ID 由组首标签单独显示,
     /// 这里不再重复。读不到事务码时(登录屏/弹窗/主屏)回退显示系统 ID,避免空白。
+    /// 若该事务码在别名配置里有短名,则显示短名(仅影响显示文字,不动身份/焦点)。
     /// 注意:仅用于显示。窗口身份与焦点匹配始终走 id / AX 元素身份,
     /// 两个页签即便显示文本相同也不会焦点混淆。
     private func displayLabel(_ win: SAPWindow) -> String {
         if let code = win.tcode, !code.isEmpty {
-            return code
+            return aliasStore.alias(for: code) ?? code
         }
         return manager.systemID(win.title)
     }
@@ -664,7 +666,14 @@ private func handleEditKeyEquivalent(_ event: NSEvent, on field: NSControl) -> B
     default:  selector = nil
     }
     guard let sel = selector else { return false }
-    return NSApp.sendAction(sel, to: field.currentEditor(), from: field)
+    // .accessory 应用的模态窗口响应链里没有标准 Edit 菜单兜底,且字段未聚焦时
+    // currentEditor() 为 nil 会让 sendAction 落空。先确保字段成为第一响应者拿到
+    // field editor,再把动作直接投递给它,Cmd+C/V/X/A/Z 才能在弹窗里生效。
+    if field.currentEditor() == nil {
+        field.window?.makeFirstResponder(field)
+    }
+    guard let editor = field.currentEditor() else { return false }
+    return NSApp.sendAction(sel, to: editor, from: field)
 }
 
 /// 支持 Cmd 编辑快捷键的搜索框(见 handleEditKeyEquivalent)

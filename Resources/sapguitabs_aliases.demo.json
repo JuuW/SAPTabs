@@ -1,0 +1,6 @@
+{
+  "aliases": [
+    { "tcode": "/SCWM/MON", "alias": "MON" },
+    { "tcode": "/SCWM/RFUI", "alias": "RF" }
+  ]
+}

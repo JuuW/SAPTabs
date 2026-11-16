@@ -26,7 +26,7 @@ if [ -f "Resources/AppIcon.icns" ]; then
 fi
 
 # 示例配置(首次运行若用户目录下无对应配置,由 app 从这里拷过去)
-for demo in sapguitabs_tcodes.demo.json sapguitabs_defaults.demo.json; do
+for demo in sapguitabs_tcodes.demo.json sapguitabs_defaults.demo.json sapguitabs_aliases.demo.json; do
     if [ -f "Resources/${demo}" ]; then
         cp "Resources/${demo}" "${BUNDLE}/Contents/Resources/${demo}"
     fi

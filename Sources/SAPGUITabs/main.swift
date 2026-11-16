@@ -5,6 +5,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let manager = SAPWindowManager()
     private let tcodeStore = TCodeStore()
     private let defaultsStore = DefaultsStore()
+    private let aliasStore = AliasStore()
     private var panel: NSPanel!
     private var statusItem: NSStatusItem!
 
@@ -130,7 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setupPanel() {
-        let hosting = NSHostingView(rootView: TabBarView(manager: manager, tcodeStore: tcodeStore))
+        let hosting = NSHostingView(rootView: TabBarView(manager: manager, tcodeStore: tcodeStore, aliasStore: aliasStore))
 
         let panel = NSPanel(
             contentRect: NSRect(x: 0, y: 0, width: 520, height: 28),
@@ -186,6 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(withTitle: "启用 / 停用自动显示", action: #selector(togglePanel), keyEquivalent: "t").target = self
         menu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r").target = self
         menu.addItem(withTitle: "重新加载默认值配置", action: #selector(reloadDefaults), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "重新加载事务码别名配置", action: #selector(reloadAliases), keyEquivalent: "").target = self
         let addItem = NSMenuItem(title: "添加当前页面字段默认值…", action: #selector(addCurrentFieldDefault), keyEquivalent: "")
         addItem.target = self
         menu.addItem(addItem)
@@ -251,6 +253,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func reloadDefaults() {
         defaultsStore.reload()
         manager.resetFilledState()   // 清去重记录,让新配置对在场窗口立即生效,不必重登
+    }
+
+    @objc private func reloadAliases() {
+        aliasStore.reload()   // @Published 变化触发页签重绘
     }
 
     /// 用菜单弹出前抓到的前台窗口字段列表,弹框让用户选字段 + 输入默认值并写入配置。
