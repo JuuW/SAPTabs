@@ -19,7 +19,7 @@ import Foundation
 /// 这些默认值在某窗口首次进入对应 tcode 时,由 SAPWindowManager 自动填入(仅当字段为空)。
 final class DefaultsStore {
     /// 一条默认值规则(JSON 里 rules 数组的元素)
-    struct Rule: Codable {
+    struct Rule: Codable, Equatable {
         let system: String   // 读入后 uppercased
         let tcode: String    // 读入后 uppercased
         let field: String    // 原样(大小写敏感)
@@ -62,21 +62,59 @@ final class DefaultsStore {
     func addRule(system: String, tcode: String, field: String, value: String) -> Bool {
         let sys = system.uppercased()
         let code = tcode.uppercased()
-        let fld = field.trimmingCharacters(in: .whitespaces)
-        guard !sys.isEmpty, !code.isEmpty, !fld.isEmpty else { return false }
+        let field = fld(field)
+        guard !sys.isEmpty, !code.isEmpty, !field.isEmpty else { return false }
 
-        var current = rules.filter { !($0.system == sys && $0.tcode == code && $0.field == fld) }
-        current.append(Rule(system: sys, tcode: code, field: fld, value: value))
+        var current = rules.filter { !($0.system == sys && $0.tcode == code && $0.field == field) }
+        current.append(Rule(system: sys, tcode: code, field: field, value: value))
+        return persist(current)
+    }
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(ConfigFile(rules: current)) else { return false }
-        guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return false }
-        rules = current
-        return true
+    /// 删除一条规则(按 system/tcode/field 精确匹配;system/tcode 不区分大小写,field 大小写敏感)。
+    /// 返回 true 表示确有删除并写盘成功。
+    @discardableResult
+    func removeRule(system: String, tcode: String, field: String) -> Bool {
+        let sys = system.uppercased()
+        let code = tcode.uppercased()
+        let next = rules.filter { !($0.system == sys && $0.tcode == code && $0.field == fld(field)) }
+        guard next.count != rules.count else { return false }
+        return persist(next)
+    }
+
+    /// 编辑一条规则:把 old(system/tcode/field)这条改成 new 四字段。
+    /// 若 new 的 (system,tcode,field) 撞上另一条已有规则(非 old 自身)则返回 false 不改动。
+    @discardableResult
+    func updateRule(oldSystem: String, oldTcode: String, oldField: String,
+                    system: String, tcode: String, field: String, value: String) -> Bool {
+        let oSys = oldSystem.uppercased(), oCode = oldTcode.uppercased(), oFld = fld(oldField)
+        let nSys = system.uppercased(), nCode = tcode.uppercased(), nFld = fld(field)
+        guard !nSys.isEmpty, !nCode.isEmpty, !nFld.isEmpty else { return false }
+
+        // 键变了且与另一条已有规则冲突 → 拒绝
+        let keyChanged = !(oSys == nSys && oCode == nCode && oFld == nFld)
+        if keyChanged, rules.contains(where: { $0.system == nSys && $0.tcode == nCode && $0.field == nFld }) {
+            return false
+        }
+        var next = rules.filter { !($0.system == oSys && $0.tcode == oCode && $0.field == oFld) }
+        next.append(Rule(system: nSys, tcode: nCode, field: nFld, value: value))
+        return persist(next)
     }
 
     // MARK: - 内部
+
+    private func fld(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces) }
+
+    /// 把一组规则写回磁盘,成功则更新内存 rules。写盘用 prettyPrinted,与示例/手写格式一致。
+    private func persist(_ next: [Rule]) -> Bool {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(ConfigFile(rules: next)) else { return false }
+        guard (try? data.write(to: fileURL, options: .atomic)) != nil else { return false }
+        rules = next
+        return true
+    }
+
+    // MARK: - 加载
 
     private func load() {
         rules = []

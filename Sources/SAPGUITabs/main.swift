@@ -206,8 +206,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.autoenablesItems = false   // 手动控制"添加默认值"项的启用态
         menu.addItem(withTitle: "启用 / 停用自动显示", action: #selector(togglePanel), keyEquivalent: "t").target = self
         menu.addItem(withTitle: "刷新", action: #selector(refreshNow), keyEquivalent: "r").target = self
-        menu.addItem(withTitle: "重新加载默认值配置", action: #selector(reloadDefaults), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "重新加载事务码别名配置", action: #selector(reloadAliases), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "字段默认值…", action: #selector(openDefaultsManager), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "事务码别名…", action: #selector(openAliasManager), keyEquivalent: "").target = self
         let addItem = NSMenuItem(title: "添加当前页面字段默认值…", action: #selector(addCurrentFieldDefault), keyEquivalent: "")
         addItem.target = self
         menu.addItem(addItem)
@@ -270,13 +270,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func refreshNow() { manager.refresh() }
 
-    @objc private func reloadDefaults() {
-        defaultsStore.reload()
-        manager.resetFilledState()   // 清去重记录,让新配置对在场窗口立即生效,不必重登
+    @objc private func openDefaultsManager() {
+        DefaultsManageWindowController.shared.show(store: defaultsStore) { [weak self] in
+            self?.manager.resetFilledState()   // 清去重记录,让改动对在场窗口立即生效,不必重登
+        }
     }
 
-    @objc private func reloadAliases() {
-        aliasStore.reload()   // @Published 变化触发页签重绘
+    @objc private func openAliasManager() {
+        AliasManageWindowController.shared.show(store: aliasStore)   // 增删改即落盘、@Published 变化触发页签重绘
     }
 
     /// 用菜单弹出前抓到的前台窗口字段列表,弹框让用户选字段 + 输入默认值并写入配置。
